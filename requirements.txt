@@ -14,5 +14,8 @@ grandalf>=0.8
 matplotlib>=3.7.0
 networkx>=3.0
 
-# Optional: Install if you want to use real CrewAI backend
-# crewai>=0.28.0
+# CrewAI (real Agent/Task/Crew orchestration)
+crewai>=0.28.0
+
+# Google ADK (real Agent + tool-dispatch orchestration)
+google-adk>=1.0.0

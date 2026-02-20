@@ -37,17 +37,17 @@ def get_orchestrator(
 
     elif backend == "crewai":
         from orchestration.crewai_adapter import CrewAIOrchestrator
-        print(f"[Factory] 🚢 Using CrewAIOrchestrator (stub mode)")
+        print(f"[Factory] 🚢 Using CrewAIOrchestrator")
         return CrewAIOrchestrator(llm, db, history_size)
 
     elif backend == "langgraph":
         from orchestration.langgraph_adapter import LangGraphOrchestrator
-        print(f"[Factory] 🔗 Using LangGraphOrchestrator (stub mode)")
+        print(f"[Factory] 🔗 Using LangGraphOrchestrator")
         return LangGraphOrchestrator(llm, db, history_size)
 
     elif backend == "adk":
         from orchestration.adk_adapter import ADKOrchestrator
-        print(f"[Factory] 🤖 Using ADKOrchestrator (mock mode)")
+        print(f"[Factory] 🤖 Using ADKOrchestrator")
         return ADKOrchestrator(llm, db, history_size)
 
     else:
