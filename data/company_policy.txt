@@ -1,0 +1,177 @@
+ACME Corporation – Employee HR Policy Document
+================================================
+Effective Date: January 1, 2025
+Version: 2.1
+
+---
+
+SECTION 1 – LEAVE POLICY
+─────────────────────────
+
+1.1 Annual Leave
+   • All full-time employees are entitled to 20 days of paid annual leave per calendar year.
+   • Leave accrues at 1.67 days per month.
+   • Unused leave (up to 10 days) may be carried forward to the next year.
+   • Leave requests must be submitted at least 3 business days in advance except in emergencies.
+
+1.2 Sick Leave
+   • Employees are entitled to 12 days of paid sick leave per year.
+   • A medical certificate is required for sick leave exceeding 2 consecutive days.
+   • Sick leave cannot be carried forward to the next year.
+
+1.3 Casual Leave
+   • 8 days of casual leave are provided per year for personal emergencies.
+   • Casual leave must not exceed 3 consecutive days.
+   • Advance notice must be given where possible.
+
+1.4 Maternity and Paternity Leave
+   • Maternity Leave: 26 weeks fully paid for the first two children.
+   • Paternity Leave: 5 days of paid leave within 1 month of childbirth.
+
+1.5 Bereavement Leave
+   • 5 days for immediate family (spouse, children, parents, siblings).
+   • 2 days for extended family (grandparents, in-laws).
+
+1.6 Public Holidays
+   • ACME observes all national public holidays.
+   • If a public holiday falls on a weekend, the following Monday is given off.
+
+1.7 Leave Without Pay (LWP)
+   • Employees may apply for LWP after exhausting entitled leave.
+   • LWP requires HR manager approval.
+
+---
+
+SECTION 2 – WORK FROM HOME (WFH) POLICY
+─────────────────────────────────────────
+
+2.1 Eligibility
+   • Employees who have completed their probation period (6 months) are eligible for WFH.
+   • WFH is a privilege, not a right, and may be revoked based on performance.
+
+2.2 WFH Entitlement
+   • Employees may work from home up to 2 days per week.
+   • Approval from the line manager is required in advance via the HR portal.
+
+2.3 Responsibilities
+   • Employees must be reachable and responsive during standard working hours (9 AM – 6 PM).
+   • VPN must be used when accessing company systems remotely.
+   • Productivity standards must be maintained equivalently to office work.
+
+2.4 Equipment
+   • The company provides a laptop for WFH use.
+   • Internet connectivity costs are the employee's responsibility unless otherwise agreed.
+
+---
+
+SECTION 3 – REIMBURSEMENT POLICY
+──────────────────────────────────
+
+3.1 Travel Reimbursement
+   • Business travel must be pre-approved by the department head.
+   • Air travel reimbursement is limited to economy class unless the journey exceeds 6 hours.
+   • Local travel (taxi, ride-share) is reimbursed with valid receipt.
+   • Mileage for personal vehicle use is reimbursed at the standard government rate.
+
+3.2 Meal Allowance
+   • On approved business travel: up to $50 per day for meals.
+   • No meal reimbursement for WFH days or regular office days.
+
+3.3 Expense Claims
+   • Expenses must be submitted within 30 days of incurrence via the HR portal.
+   • Claims submitted after 30 days will not be processed.
+   • All claims require original receipts or digital equivalents.
+
+3.4 Client Entertainment
+   • Must be pre-approved by the department head.
+   • Limit: $150 per event.
+
+---
+
+SECTION 4 – PERFORMANCE REVIEW POLICY
+───────────────────────────────────────
+
+4.1 Review Cycle
+   • Formal performance reviews are conducted twice a year: in June and December.
+   • Mid-year reviews are advisory; year-end reviews determine bonuses and increments.
+
+4.2 Rating Scale
+   • 5 – Exceptional
+   • 4 – Exceeds Expectations
+   • 3 – Meets Expectations
+   • 2 – Needs Improvement
+   • 1 – Unsatisfactory
+
+4.3 Bonus Structure
+   • Rating 5: 20% of annual CTC as bonus
+   • Rating 4: 15% of annual CTC
+   • Rating 3: 10% of annual CTC
+   • Rating 1–2: No bonus
+
+---
+
+SECTION 5 – CODE OF CONDUCT
+─────────────────────────────
+
+5.1 Professional Behavior
+   • All employees must maintain respectful and professional conduct.
+   • Harassment (sexual, racial, or otherwise) is strictly prohibited.
+   • Violations may result in immediate termination.
+
+5.2 Confidentiality
+   • Employees must not disclose confidential company information to third parties.
+   • NDAs are signed at time of employment.
+
+5.3 Conflict of Interest
+   • Employees must disclose any financial or personal interest in vendors or clients.
+   • Outside employment requires prior written approval from HR.
+
+5.4 Use of Company Assets
+   • Company devices and internet must not be used for personal gain or illegal activities.
+   • Software installed on company machines must be approved by IT.
+
+---
+
+SECTION 6 – OFFBOARDING POLICY
+───────────────────────────────
+
+6.1 Notice Period
+   • Junior employees (< 2 years): 1 month notice.
+   • Senior employees (> 2 years): 2 months notice.
+   • Notice may be bought out by either party.
+
+6.2 Exit Process
+   • Exit interview is mandatory.
+   • Return of all company assets within 3 days of last working day.
+   • Full-and-final settlement processed within 45 days of last working day.
+
+6.3 Leave Encashment
+   • Accrued annual leave (max 30 days) is encashed at the time of exit.
+
+---
+
+SECTION 7 – REFERRAL POLICY
+─────────────────────────────
+
+7.1 Employee Referrals
+   • Employees may refer qualified candidates for open positions.
+   • Referral bonus: $500 for junior roles, $1,000 for senior roles.
+   • Bonus is paid 90 days after the referred candidate joins.
+
+---
+
+SECTION 8 – HEALTH AND WELLNESS
+─────────────────────────────────
+
+8.1 Health Insurance
+   • All employees and their immediate dependents are covered under company group health insurance.
+   • Coverage: Up to $50,000 per family per year.
+   • Pre-existing conditions are covered after a 2-year waiting period.
+
+8.2 Mental Health
+   • Anonymous counselling sessions are available via the Employee Assistance Program (EAP).
+   • Up to 6 free sessions per year.
+
+---
+
+For any HR-related queries, please contact: hr@acmecorp.com

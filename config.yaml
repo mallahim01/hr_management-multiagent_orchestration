@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────
+# Multi-Agent HR Demo – Configuration
+# ─────────────────────────────────────────────────────────────
+# Switch orchestration backend without touching any business logic.
+# Options: native | crewai | langgraph | adk
+orchestrator_backend: langgraph
+
+# The user that all demo workflows operate on (auto-created on first run)
+active_user_id: 1
+
+# OpenAI settings
+llm:
+  model: gpt-4o-mini          # cost-efficient model for demos
+  max_retries: 3
+  temperature: 0.7
+
+# SQLite database file (relative to project root)
+database:
+  path: data/hr_demo.db
+
+# How many recent messages to include as context for each agent call
+conversation:
+  history_size: 3
+
+# Web server settings (used by app.py)
+server:
+  host: "127.0.0.1"
+  port: 5000
+  debug: true
