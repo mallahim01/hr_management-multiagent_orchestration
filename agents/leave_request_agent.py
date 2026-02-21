@@ -98,19 +98,35 @@ class LeaveRequestAgent(BaseAgent):
             return "No problem! Your leave request has been cancelled. Let me know if you need anything else. 😊"
 
         if words & yes_words:
+            # Calculate days requested
+            from datetime import datetime
+            try:
+                start_dt = datetime.strptime(state["start_date"], "%Y-%m-%d")
+                end_dt = datetime.strptime(state["end_date"], "%Y-%m-%d")
+                days = max(1, (end_dt - start_dt).days + 1)
+            except Exception:
+                days = 1 # fallback
+
             leave_id = self.db.insert_leave_request(
                 user_id=ctx.user_id,
                 start_date=state["start_date"],
                 end_date=state["end_date"],
                 reason=state["reason"],
             )
+
+            # Deduct from user's balance
+            self.db.execute(
+                "UPDATE leave_balance SET used_leaves = used_leaves + ?, remaining_leaves = remaining_leaves - ? WHERE user_id = ?",
+                (days, days, ctx.user_id)
+            )
+
             # Clear the slot-filling state
             ctx.active_agent = None
             ctx.agent_state = {}
             return (
                 f"✅ Your leave request has been submitted successfully!\n\n"
                 f"**Reference ID:** LR-{leave_id:04d}\n"
-                f"📅 {state['start_date']} → {state['end_date']}\n"
+                f"📅 {state['start_date']} → {state['end_date']} ({days} days deducted)\n"
                 f"📝 Reason: {state['reason']}\n"
                 f"Status: **Pending** – HR will review and confirm."
             )
