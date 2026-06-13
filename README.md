@@ -1,6 +1,6 @@
-# 🏢 ACME HR – Multi-Agent Demo System
+# 🏢 ACME HR – Multi-Agent System
 
-A lightweight multi-agent HR assistant that demonstrates **intent-based orchestration** with **pluggable backends**. Designed for client demos.
+A lightweight multi-agent HR assistant that demonstrates **intent-based orchestration** with **pluggable backends**.
 
 ---
 
