@@ -23,13 +23,14 @@ happens at the caller (main.py / app.py) for every backend alike.
 """
 
 import os
-from typing import Any, Dict, TypedDict
+from typing import Any, Dict, List, TypedDict
 
 from langgraph.graph import StateGraph, END
 
 from agents import AGENT_REGISTRY
 from core.intent_detector import IntentDetector
 from core.llm_wrapper import LLMWrapper
+from core.logger import InteractionLogger
 from core.session import SessionContext
 from database.db import DatabaseManager
 from orchestration.base import BaseOrchestrator
@@ -57,6 +58,7 @@ class HRGraphState(TypedDict):
     target_agent: str
     reasoning:    str
     reply:        str
+    failed:       bool           # an agent node raised and was contained
 
 
 class LangGraphOrchestrator(BaseOrchestrator):
@@ -77,10 +79,13 @@ class LangGraphOrchestrator(BaseOrchestrator):
         self.db = db
         self.history_size = history_size
         self.intent_detector = IntentDetector(llm)
+        self.logger = InteractionLogger()
         # Agent instances are stateless; conversation state lives in SessionContext.
         self._agent_cache: Dict[str, Any] = {}
         self._graph = self._build_graph()
         self._compiled = self._graph.compile()
+        # Nodes visited by the most recent process() call, in order.
+        self.last_path: List[str] = []
 
     # ── Graph construction ───────────────────────────────────────────────────
 
@@ -152,10 +157,40 @@ class LangGraphOrchestrator(BaseOrchestrator):
             ctx.last_intent = state["intent"]
             ctx.last_agent = agent_name
 
-            reply = self.invoke_agent(agent_name, state["user_input"], ctx)
+            try:
+                reply = self.invoke_agent(agent_name, state["user_input"], ctx)
+            except Exception as e:
+                # Contain the failure at the node. An exception escaping here
+                # would abort the whole graph and surface as a 500 with no
+                # reply at all; the user gets a plain apology instead and the
+                # cause is recorded for whoever is on the hook for it.
+                print(f"  [LangGraph] ⛔ Node {agent_name} raised: {e!r}")
+                self.logger.log_event(
+                    "agent_node_failed",
+                    session_id=ctx.session_id,
+                    user_id=ctx.user_id,
+                    reason_code="agent_exception",
+                    detail=f"{type(e).__name__}: {e}",
+                    node=agent_name,
+                    backend=self.backend_name,
+                )
+                # Release the session so a wedged slot-fill cannot trap the
+                # user in an agent that fails on every turn.
+                ctx.active_agent = None
+                ctx.agent_state = {}
+                return {
+                    "reply": (
+                        "⚠️ Something went wrong while handling that. Nothing has "
+                        "been recorded. Please try again, or contact HR if it "
+                        "keeps happening."
+                    ),
+                    "target_agent": agent_name,
+                    "failed": True,
+                }
+
             # Write target_agent back so the result reports the node that
             # actually ran, not the name the router was asked for.
-            return {"reply": reply, "target_agent": agent_name}
+            return {"reply": reply, "target_agent": agent_name, "failed": False}
 
         return agent_node
 
@@ -195,9 +230,21 @@ class LangGraphOrchestrator(BaseOrchestrator):
             "target_agent": "",
             "reasoning":    "",
             "reply":        "",
+            "failed":       False,
         }
 
-        result = self._compiled.invoke(initial_state)
+        # stream() rather than invoke() so the nodes the turn actually visited
+        # can be reported. Same execution either way; this is what makes the
+        # routing decision observable instead of inferred from the final state.
+        result: Dict[str, Any] = dict(initial_state)
+        path: List[str] = []
+        for step in self._compiled.stream(initial_state, stream_mode="updates"):
+            for node_name, update in step.items():
+                path.append(node_name)
+                if update:
+                    result.update(update)
+
+        self.last_path = path
         target_agent = result["target_agent"]
 
         return {
@@ -209,6 +256,9 @@ class LangGraphOrchestrator(BaseOrchestrator):
             "reasoning":   result.get("reasoning", ""),
             "session_id":  ctx.session_id,
             "backend":     self.backend_name,
+            # LangGraph-specific: the ordered node path for this turn.
+            "graph_path":  path,
+            "failed":      bool(result.get("failed")),
         }
 
     # ── Internal helpers ─────────────────────────────────────────────────────

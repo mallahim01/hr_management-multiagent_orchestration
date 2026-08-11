@@ -7,8 +7,14 @@ Flow:
   1. User says "I want leave" / "I'm sick" / "Need a day off"
   2. Agent extracts: start_date, end_date, reason (via LLM)
   3. Missing slots → agent asks for them one at a time
-  4. Once all slots filled → shows balance, asks confirmation
-  5. User confirms → insert into DB, clear active_agent
+  4. Once all slots filled → validate, then show balance and ask confirmation
+  5. User confirms → re-validate, insert into DB, clear active_agent
+
+Validation (see _validate_request) rejects a request that is malformed, that
+exceeds the user's remaining balance, or that overlaps leave already on the
+books. It runs twice — before asking for confirmation, and again at submission,
+because the balance can move between the two turns. Every rejection is written
+to the interaction log as a structured event alongside the friendly reply.
 
 State keys (ctx.agent_state):
   start_date, end_date, reason, awaiting_confirmation
@@ -19,6 +25,7 @@ from typing import Dict, Optional
 
 from agents.base_agent import BaseAgent
 from core.session import SessionContext
+from database.db import RecordValidationError
 
 EXTRACT_PROMPT = """You are an HR assistant helping a user fill out a leave request form.
 
@@ -69,7 +76,12 @@ class LeaveRequestAgent(BaseAgent):
         if not state.get("reason"):
             return "What's the reason for your leave? (e.g. sick, personal, vacation)"
 
-        # ── Step 4: All slots collected – show summary and ask to confirm ──
+        # ── Step 4: Validate before asking the user to confirm ─────────────
+        rejection = self._validate_request(ctx, state)
+        if rejection:
+            return rejection
+
+        # ── Step 5: All slots collected – show summary and ask to confirm ──
         balance = self.db.get_leave_balance(ctx.user_id)
         remaining = balance["remaining_leaves"] if balance else "?"
 
@@ -98,27 +110,32 @@ class LeaveRequestAgent(BaseAgent):
             return "No problem! Your leave request has been cancelled. Let me know if you need anything else. 😊"
 
         if words & yes_words:
-            # Calculate days requested
-            from datetime import datetime
+            # Re-validate: the balance may have moved since the summary turn.
+            rejection = self._validate_request(ctx, state)
+            if rejection:
+                return rejection
+
             try:
-                start_dt = datetime.strptime(state["start_date"], "%Y-%m-%d")
-                end_dt = datetime.strptime(state["end_date"], "%Y-%m-%d")
-                days = max(1, (end_dt - start_dt).days + 1)
-            except Exception:
-                days = 1 # fallback
-
-            leave_id = self.db.insert_leave_request(
-                user_id=ctx.user_id,
-                start_date=state["start_date"],
-                end_date=state["end_date"],
-                reason=state["reason"],
-            )
-
-            # Deduct from user's balance
-            self.db.execute(
-                "UPDATE leave_balance SET used_leaves = used_leaves + ?, remaining_leaves = remaining_leaves - ? WHERE user_id = ?",
-                (days, days, ctx.user_id)
-            )
+                days = self.db.leave_days(state["start_date"], state["end_date"])
+                leave_id = self.db.submit_leave_request(
+                    user_id=ctx.user_id,
+                    start_date=state["start_date"],
+                    end_date=state["end_date"],
+                    reason=state["reason"],
+                )
+            except RecordValidationError as e:
+                # Last line of defence: the database refused the row. Nothing
+                # was written, because insert and deduction share a transaction.
+                return self._reject(
+                    ctx, state,
+                    reason_code="storage_rejected",
+                    detail=str(e),
+                    message=(
+                        "❌ I couldn't save that leave request — the details didn't "
+                        "pass a final check, so **nothing has been recorded**.\n\n"
+                        "Please try again, or contact HR if this keeps happening."
+                    ),
+                )
 
             # Clear the slot-filling state
             ctx.active_agent = None
@@ -135,6 +152,124 @@ class LeaveRequestAgent(BaseAgent):
             ctx.active_agent = None
             ctx.agent_state = {}
             return "No problem! Your leave request has been cancelled. Let me know if you need anything else. 😊"
+
+    # ── Validation ────────────────────────────────────────────────────────
+
+    def _validate_request(self, ctx: SessionContext, state: Dict) -> Optional[str]:
+        """
+        Check the collected slots against the database.
+
+        Returns a user-facing rejection message, or None when the request is
+        acceptable. Every rejection is also written to the interaction log via
+        _reject() so an operator can see the numbers behind the friendly text.
+        """
+        start_date, end_date = state.get("start_date"), state.get("end_date")
+
+        # (0) Malformed dates — the LLM extracts these, so they are untrusted.
+        try:
+            days = self.db.leave_days(start_date, end_date)
+        except RecordValidationError as e:
+            return self._reject(
+                ctx, state,
+                reason_code="malformed_dates",
+                detail=str(e),
+                message=(
+                    "❌ Those dates don't look right to me "
+                    f"({start_date} → {end_date}).\n\n"
+                    "Could you give me the start date again, in YYYY-MM-DD form?"
+                ),
+            )
+
+        # (a) Not enough balance left.
+        balance = self.db.get_leave_balance(ctx.user_id)
+        if not balance:
+            return self._reject(
+                ctx, state,
+                reason_code="no_balance_record",
+                detail=f"no leave_balance row for user_id {ctx.user_id}",
+                message=(
+                    "❌ I couldn't find a leave balance on your record, so I can't "
+                    "submit this request. Please contact HR."
+                ),
+            )
+
+        remaining = balance["remaining_leaves"]
+        if days > remaining:
+            return self._reject(
+                ctx, state,
+                reason_code="insufficient_balance",
+                detail=f"requested {days} day(s), {remaining} remaining",
+                requested_days=days,
+                remaining_leaves=remaining,
+                message=(
+                    f"❌ I can't submit this request — it's for **{days} day"
+                    f"{'s' if days != 1 else ''}**, but you only have "
+                    f"**{remaining} day{'s' if remaining != 1 else ''}** remaining.\n\n"
+                    "You could shorten the request, or contact HR about unpaid leave. "
+                    "What dates would you like instead?"
+                ),
+            )
+
+        # (b) Overlaps leave already on the books.
+        clashes = self.db.get_overlapping_leave_requests(
+            ctx.user_id, start_date, end_date
+        )
+        if clashes:
+            clash = clashes[0]
+            return self._reject(
+                ctx, state,
+                reason_code="overlapping_request",
+                detail=(
+                    f"overlaps request LR-{clash['id']:04d} "
+                    f"({clash['start_date']} → {clash['end_date']}, {clash['status']})"
+                ),
+                conflicting_request_id=clash["id"],
+                message=(
+                    f"❌ That overlaps leave you've already booked:\n\n"
+                    f"📅 **LR-{clash['id']:04d}** — {clash['start_date']} → "
+                    f"{clash['end_date']} ({clash['status']})\n"
+                    f"📝 {clash['reason']}\n\n"
+                    "Pick dates that don't clash, or cancel the existing request first. "
+                    "What dates would you like instead?"
+                ),
+            )
+
+        return None
+
+    def _reject(
+        self,
+        ctx: SessionContext,
+        state: Dict,
+        reason_code: str,
+        detail: str,
+        message: str,
+        **extra,
+    ) -> str:
+        """
+        Log a structured rejection and reset the date slots so the user can retry.
+
+        The reason is kept — it is rarely the thing that was wrong — and the
+        agent stays active, so the next message re-enters slot filling instead
+        of being re-routed by the intent detector.
+        """
+        self.logger.log_event(
+            "leave_request_rejected",
+            session_id=ctx.session_id,
+            user_id=ctx.user_id,
+            reason_code=reason_code,
+            detail=detail,
+            start_date=state.get("start_date"),
+            end_date=state.get("end_date"),
+            **extra,
+        )
+        print(f"  [LeaveRequestAgent] ⛔ Rejected ({reason_code}): {detail}")
+
+        state.pop("start_date", None)
+        state.pop("end_date", None)
+        state.pop("awaiting_confirmation", None)
+        ctx.agent_state = state
+        ctx.active_agent = "LeaveRequestAgent"
+        return message
 
     def _extract_slots(self, user_input: str, ctx: SessionContext, today: str) -> Dict:
         """Use LLM to extract leave slots from the user message + history."""

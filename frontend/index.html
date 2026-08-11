@@ -33,6 +33,15 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 /* ── Layout ─────────────────────────────────────────────── */
 #app { display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 100vh; height: 100vh; }
 
+/* Narrow screens: sidebar collapses above the chat instead of squeezing it */
+@media (max-width: 860px) {
+  html, body { overflow: auto; }
+  #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: auto; min-height: 100vh; }
+  #sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 45vh; }
+  #main { height: 55vh; min-height: 380px; }
+  .msg { max-width: 95%; }
+}
+
 /* ── Sidebar ─────────────────────────────────────────────── */
 #sidebar {
   background: var(--surface);
@@ -74,7 +83,50 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
   transition: all .2s; text-align: center;
 }
 .backend-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.backend-btn:hover:not(.active) { border-color: var(--accent); color: var(--accent); }
+.backend-btn:hover:not(.active):not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.backend-btn:disabled { opacity: .45; cursor: wait; }
+.backend-btn.pending { border-color: var(--yellow); color: var(--yellow); }
+.backend-note { font-size: .65rem; color: var(--muted); margin-top: .5rem; line-height: 1.5; }
+.backend-note.err { color: var(--red); }
+
+/* Graph / eval panels */
+.graph-ascii {
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1rem; overflow-x: auto; font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: .62rem; line-height: 1.25; color: var(--accent2); white-space: pre;
+}
+.path-chips { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; margin-top: .5rem; }
+.path-chip {
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  padding: .15rem .5rem; font-size: .65rem; font-family: monospace; color: var(--accent2);
+}
+.path-arrow { color: var(--muted); font-size: .7rem; }
+
+.eval-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .5rem; margin-bottom: 1rem; }
+.eval-stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .6rem; text-align: center; }
+.eval-stat .v { font-size: 1.4rem; font-weight: 700; }
+.eval-stat .l { font-size: .6rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.eval-stat.ok .v { color: var(--green); }
+.eval-stat.bad .v { color: var(--red); }
+.eval-stat.amb .v { color: var(--yellow); }
+.eval-stat.acc .v { color: var(--accent2); }
+
+.eval-row {
+  background: var(--card); border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: 8px; padding: .65rem .85rem; margin-bottom: .5rem; font-size: .78rem;
+}
+.eval-row.correct   { border-left-color: var(--green); }
+.eval-row.incorrect { border-left-color: var(--red); }
+.eval-row.ambiguous { border-left-color: var(--yellow); }
+.eval-row.error     { border-left-color: var(--muted); }
+.eval-verdict { font-weight: 700; font-size: .65rem; text-transform: uppercase; letter-spacing: .05em; }
+.eval-row.correct   .eval-verdict { color: var(--green); }
+.eval-row.incorrect .eval-verdict { color: var(--red); }
+.eval-row.ambiguous .eval-verdict { color: var(--yellow); }
+.eval-row.error     .eval-verdict { color: var(--muted); }
+.eval-user { margin: .25rem 0; }
+.eval-meta { font-size: .7rem; color: var(--muted); }
+.eval-meta code { color: var(--accent2); }
 
 /* Leave balance widget */
 .balance-widget { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; }
@@ -247,11 +299,12 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 #send-btn svg { width: 18px; height: 18px; }
 
 /* ── Data tab ──────────────────────────────────────────── */
-#data-panel {
+.panel-scroll {
   flex: 1; overflow-y: auto; padding: 1.25rem;
   display: flex; flex-direction: column; gap: 1.25rem;
 }
 .data-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.data-card > .backend-note, .data-card > #eval-body, .data-card > #graph-body { padding: 0 1rem 1rem; }
 .data-card-header { padding: .75rem 1rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
 .data-card-title { font-size: .85rem; font-weight: 600; }
 .data-refresh { background: none; border: none; color: var(--muted); cursor: pointer; font-size: .75rem; transition: color .2s; }
@@ -315,13 +368,14 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
     <div class="sidebar-section">
       <div class="section-label">Orchestration Backend</div>
       <div class="backend-grid">
-        <button class="backend-btn" data-backend="native">🐍 Native</button>
-        <button class="backend-btn" data-backend="crewai">🚢 CrewAI</button>
-        <button class="backend-btn" data-backend="langgraph">🔗 LangGraph</button>
-        <button class="backend-btn" data-backend="adk">🤖 ADK</button>
+        <button class="backend-btn" data-backend="native"    onclick="switchBackend('native')">🐍 Native</button>
+        <button class="backend-btn" data-backend="langgraph" onclick="switchBackend('langgraph')">🔗 LangGraph</button>
+        <button class="backend-btn" data-backend="crewai"    onclick="switchBackend('crewai')">🚢 CrewAI</button>
+        <button class="backend-btn" data-backend="adk"       onclick="switchBackend('adk')">🤖 ADK</button>
       </div>
-      <p style="font-size:.65rem;color:var(--muted);margin-top:.5rem">
-        ℹ️ Switch backend in <code>config.yaml</code> and restart server.
+      <p class="backend-note" id="backend-note">
+        Switches live — session state is in SQLite, so a conversation survives the swap.
+        <code>config.yaml</code> sets the startup default.
       </p>
     </div>
 
@@ -382,6 +436,8 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
     <div id="tab-bar">
       <div class="tab active" onclick="switchTab('chat')">💬 Chat</div>
       <div class="tab" onclick="switchTab('data'); loadData()">📋 Data</div>
+      <div class="tab" onclick="switchTab('graph'); loadGraph()">🔗 Graph</div>
+      <div class="tab" onclick="switchTab('evals')">🎯 Evals</div>
     </div>
 
     <!-- Chat Panel -->
@@ -435,7 +491,7 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
 
     <!-- Data Panel -->
     <div class="tab-panel" id="panel-data">
-      <div id="data-panel">
+      <div class="panel-scroll">
 
         <!-- Leave Balance -->
         <div class="data-card">
@@ -473,6 +529,37 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
           <div id="history-table"><div class="empty-state">Loading…</div></div>
         </div>
 
+      </div>
+    </div>
+
+    <!-- Graph Panel -->
+    <div class="tab-panel" id="panel-graph">
+      <div class="panel-scroll">
+        <div class="data-card">
+          <div class="data-card-header">
+            <span class="data-card-title">🔗 Compiled StateGraph</span>
+            <button class="data-refresh" onclick="loadGraph()">↻ Refresh</button>
+          </div>
+          <div id="graph-body"><div class="empty-state">Loading…</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Evals Panel -->
+    <div class="tab-panel" id="panel-evals">
+      <div class="panel-scroll">
+        <div class="data-card">
+          <div class="data-card-header">
+            <span class="data-card-title">🎯 Routing Evaluation — LLM as judge</span>
+            <button class="data-refresh" onclick="runEval()">▶ Run on last 10 turns</button>
+          </div>
+          <p class="backend-note" style="margin:0 0 .75rem">
+            Replays recent turns from the interaction log and asks the model, after the fact,
+            whether each one reached the right agent. Slot-fill continuations are skipped —
+            the orchestrator takes no routing decision on those.
+          </p>
+          <div id="eval-body"><div class="empty-state">Not run yet.</div></div>
+        </div>
       </div>
     </div>
 
@@ -625,11 +712,22 @@ function appendAgentMessage(result) {
           <div class="conf-bar"><div class="conf-fill" style="width:${confPct}%"></div></div>
           <span class="conf-text">${confPct}% conf</span>
         </div>
-        <span style="font-size:.65rem;color:var(--muted)">${result.intent || ''}</span>
+        <span style="font-size:.65rem;color:var(--muted)">${escHtml(result.intent || '')}</span>
       </div>
+      ${graphPathChips(result)}
     </div>`;
   msgs.appendChild(div);
   scrollBottom();
+}
+
+// LangGraph reports the ordered nodes a turn traversed; show it when present.
+function graphPathChips(result) {
+  const path = result.graph_path;
+  if (!Array.isArray(path) || !path.length) return '';
+  return `<div class="path-chips">${
+    path.map(n => `<span class="path-chip">${escHtml(n)}</span>`)
+        .join('<span class="path-arrow">→</span>')
+  }</div>`;
 }
 
 function appendHandoff(from, to) {
@@ -668,22 +766,120 @@ function updateAgentStatus(result) {
 // ── Observability ────────────────────────────────────────────────
 function updateObservability(result) {
   const list = document.getElementById('obs-list');
-  // Remove placeholder
-  if (list.children.length === 1 && list.children[0].tagName !== 'DIV'.toUpperCase().normalize) {
-    const first = list.children[0];
-    if (first.style && !first.classList.contains('obs-item')) list.innerHTML = '';
-  }
-  if (!document.querySelector('.obs-item')) list.innerHTML = '';
+  // Drop the "no interactions yet" placeholder on the first real entry.
+  if (!list.querySelector('.obs-item')) list.innerHTML = '';
+
+  const path = Array.isArray(result.graph_path) && result.graph_path.length
+    ? `<div class="obs-meta" style="font-family:monospace">${escHtml(result.graph_path.join(' → '))}</div>`
+    : '';
 
   const item = document.createElement('div');
   item.className = `obs-item ${result.intent || 'general'}`;
   item.innerHTML = `
-    <div class="intent-badge">${result.intent || 'general'}</div>
-    <div class="obs-meta">${result.agent || result.agent_class} · ${Math.round((result.confidence||0)*100)}% · ${result.backend}</div>`;
+    <div class="intent-badge">${escHtml(result.intent || 'general')}</div>
+    <div class="obs-meta">${escHtml(result.agent || result.agent_class)} · ${Math.round((result.confidence||0)*100)}% · ${escHtml(result.backend)}</div>
+    ${path}`;
   list.insertBefore(item, list.firstChild);
 
-  // Keep last 8
   while (list.children.length > 8) list.removeChild(list.lastChild);
+}
+
+// ── Backend switching ────────────────────────────────────────────
+async function switchBackend(backend) {
+  if (backend === currentBackend) return;
+  const note = document.getElementById('backend-note');
+  const btns = document.querySelectorAll('.backend-btn');
+  const target = document.querySelector(`.backend-btn[data-backend="${backend}"]`);
+
+  btns.forEach(b => b.disabled = true);
+  target.classList.add('pending');
+  note.className = 'backend-note';
+  note.textContent = `Starting ${backend}… (crewai and adk load heavy dependencies on first use)`;
+
+  try {
+    const res = await fetch('/api/backend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    currentBackend = data.backend;
+    highlightBackend(currentBackend);
+    note.textContent = `Now routing through ${currentBackend}. Conversation state carried over.`;
+    loadStatus();
+  } catch (e) {
+    note.className = 'backend-note err';
+    note.textContent = `Could not switch: ${e.message}`;
+    highlightBackend(currentBackend);
+  } finally {
+    target.classList.remove('pending');
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+// ── Graph view ───────────────────────────────────────────────────
+async function loadGraph() {
+  const el = document.getElementById('graph-body');
+  el.innerHTML = '<div class="empty-state">Loading…</div>';
+  try {
+    const d = await apiFetch('/api/graph');
+    if (!d.available) {
+      el.innerHTML = `<div class="empty-state">${escHtml(d.message)}<br><br>
+        Active backend: <code>${escHtml(d.backend)}</code>. Switch to
+        <strong>LangGraph</strong> in the sidebar to see the compiled graph.</div>`;
+      return;
+    }
+    const path = (d.last_path || []).length
+      ? `<div class="section-label" style="margin-top:1rem">Last turn's path</div>
+         <div class="path-chips">${d.last_path
+            .map(n => `<span class="path-chip">${escHtml(n)}</span>`)
+            .join('<span class="path-arrow">→</span>')}</div>`
+      : `<div class="backend-note" style="margin-top:1rem">Send a message to see the path a turn takes.</div>`;
+    el.innerHTML = `<div class="graph-ascii">${escHtml(d.ascii)}</div>${path}`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Error loading graph.</div>';
+  }
+}
+
+// ── Routing evals ────────────────────────────────────────────────
+async function runEval() {
+  const el = document.getElementById('eval-body');
+  el.innerHTML = '<div class="empty-state">Judging recent turns…</div>';
+  try {
+    const d = await apiFetch('/api/eval?limit=10');
+    if (!d.results.length) {
+      el.innerHTML = `<div class="empty-state">${escHtml(d.note)}</div>`;
+      return;
+    }
+    const acc = d.accuracy === null ? 'n/a' : `${Math.round(d.accuracy * 100)}%`;
+    const summary = `
+      <div class="eval-summary">
+        <div class="eval-stat acc"><div class="v">${acc}</div><div class="l">Accuracy</div></div>
+        <div class="eval-stat ok"><div class="v">${d.correct}</div><div class="l">Correct</div></div>
+        <div class="eval-stat bad"><div class="v">${d.incorrect}</div><div class="l">Misrouted</div></div>
+        <div class="eval-stat amb"><div class="v">${d.ambiguous}</div><div class="l">Ambiguous</div></div>
+        <div class="eval-stat"><div class="v">${d.skipped_continuations}</div><div class="l">Skipped</div></div>
+      </div>`;
+
+    const rows = d.results.map(r => `
+      <div class="eval-row ${r.verdict}">
+        <span class="eval-verdict">${escHtml(r.verdict)}</span>
+        <div class="eval-user">"${escHtml(r.user_input.slice(0, 140))}"</div>
+        <div class="eval-meta">
+          routed to <code>${escHtml(r.chosen_agent)}</code>
+          ${r.verdict === 'incorrect' ? ` — expected <code>${escHtml(r.expected_agent)}</code>` : ''}
+          · ${escHtml(r.backend || '?')}
+        </div>
+        <div class="eval-meta" style="margin-top:.2rem">${escHtml(r.reason)}</div>
+      </div>`).join('');
+
+    el.innerHTML = summary + rows +
+      `<p class="backend-note">${escHtml(d.note)}</p>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Error running evaluation.</div>';
+  }
 }
 
 // ── Leave balance sidebar ────────────────────────────────────────

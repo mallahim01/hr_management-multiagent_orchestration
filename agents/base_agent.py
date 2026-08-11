@@ -6,9 +6,10 @@ Provides shared LLM access and a helper to build message lists from history.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from core.llm_wrapper import LLMWrapper
+from core.logger import InteractionLogger
 from core.session import SessionContext
 from database.db import DatabaseManager
 
@@ -29,9 +30,21 @@ class BaseAgent(ABC):
     # Colour tag for the frontend badge
     colour: str = "gray"
 
-    def __init__(self, llm: LLMWrapper, db: DatabaseManager) -> None:
+    def __init__(
+        self,
+        llm: LLMWrapper,
+        db: DatabaseManager,
+        logger: Optional[InteractionLogger] = None,
+    ) -> None:
         self.llm = llm
         self.db = db
+        # Agents log domain events (e.g. a rejected leave request) through the
+        # same logger as conversation turns. Optional so the orchestrators can
+        # keep constructing agents as cls(llm, db); the default lands on
+        # InteractionLogger's default path, which is also what main.py and
+        # app.py use, so events and turns interleave in one file. Pass an
+        # explicit logger when you need them somewhere else (the tests do).
+        self.logger = logger or InteractionLogger()
 
     @abstractmethod
     def handle(self, user_input: str, ctx: SessionContext) -> str:

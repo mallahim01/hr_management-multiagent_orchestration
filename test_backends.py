@@ -13,19 +13,20 @@ import yaml
 
 load_dotenv()
 
-if not os.getenv("OPENAI_API_KEY"):
-    print("❌ OPENAI_API_KEY not set in .env")
-    sys.exit(1)
-
 with open("config.yaml", encoding="utf-8") as f:
     config = yaml.safe_load(f)
 
 from database.db import DatabaseManager
 from database.schema import initialize_database
-from core.llm_wrapper import LLMWrapper
+from core.llm_wrapper import LLMWrapper, available_keys
 from core.session import SessionManager
 from core.logger import InteractionLogger
 from orchestration.factory import get_orchestrator
+
+provider = config["llm"].get("provider", "groq")
+if not available_keys(provider):
+    print(f"❌ No API key for provider '{provider}' in .env")
+    sys.exit(1)
 
 # Init shared resources
 db_path = config["database"]["path"]
@@ -37,6 +38,7 @@ llm = LLMWrapper(
     model=config["llm"]["model"],
     max_retries=config["llm"]["max_retries"],
     temperature=config["llm"]["temperature"],
+    provider=provider,
 )
 logger = InteractionLogger()
 user_id = config["active_user_id"]

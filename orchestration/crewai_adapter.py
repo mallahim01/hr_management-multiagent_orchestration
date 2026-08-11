@@ -12,8 +12,7 @@ The Crew.kickoff() drives real CrewAI execution.
 import os
 from typing import Any, Dict
 
-from crewai import Agent as CrewAgent, Task as CrewTask, Crew, Process
-from crewai.tools import tool as crewai_tool
+from crewai import LLM as CrewLLM, Agent as CrewAgent, Task as CrewTask, Crew, Process
 
 from agents import AGENT_REGISTRY
 from core.intent_detector import IntentDetector
@@ -47,7 +46,7 @@ class CrewAIOrchestrator(BaseOrchestrator):
 
     def _build_crew_agents(self) -> Dict[str, CrewAgent]:
         """Define CrewAI Agents with roles, goals, and backstories."""
-        model_name = "gpt-4o-mini"
+        model_name = self._build_crew_llm()
 
         agents = {
             "LeaveRequestAgent": CrewAgent(
@@ -108,6 +107,27 @@ class CrewAIOrchestrator(BaseOrchestrator):
             ),
         }
         return agents
+
+    def _build_crew_llm(self) -> CrewLLM:
+        """
+        Build the LLM handle the Crew agents share, reusing our own credentials.
+
+        Passing a model *string* to CrewAgent(llm=...) makes CrewAI resolve it
+        through its own path, which attaches a `cache_breakpoint` property that
+        Groq's API rejects outright. Constructing an LLM object avoids that.
+
+        Any OpenAI-compatible endpoint is addressed as `openai/<model>` plus an
+        explicit base_url — that is LiteLLM's convention, and it keeps this
+        working for whatever provider core/llm_wrapper.py is configured with.
+        """
+        kwargs: Dict[str, Any] = {
+            "model": self.llm.model,
+            "api_key": self.llm.client.api_key,
+        }
+        if self.llm.base_url:
+            kwargs["model"] = f"openai/{self.llm.model}"
+            kwargs["base_url"] = self.llm.base_url
+        return CrewLLM(**kwargs)
 
     # ── Public API (overrides) ───────────────────────────────────
 

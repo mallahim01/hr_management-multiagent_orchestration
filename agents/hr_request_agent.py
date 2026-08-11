@@ -8,6 +8,7 @@ and then stores them to the database.
 import json
 from agents.base_agent import BaseAgent
 from core.session import SessionContext
+from database.db import RecordValidationError
 
 
 EXTRACT_PROMPT = """You are an HR assistant helping a user formulate an HR request.
@@ -59,10 +60,26 @@ class HRRequestAgent(BaseAgent):
             return "No problem! Your HR request has been cancelled. Let me know if there's anything else I can help with."
 
         if words & yes_words:
-            request_id = self.db.insert_hr_request(
-                user_id=ctx.user_id,
-                request_text=state["request_description"],
-            )
+            try:
+                request_id = self.db.insert_hr_request(
+                    user_id=ctx.user_id,
+                    request_text=state["request_description"],
+                )
+            except RecordValidationError as e:
+                self.logger.log_event(
+                    "hr_request_rejected",
+                    session_id=ctx.session_id,
+                    user_id=ctx.user_id,
+                    reason_code="storage_rejected",
+                    detail=str(e),
+                )
+                print(f"  [HRRequestAgent] ⛔ Rejected: {e}")
+                ctx.active_agent = None
+                ctx.agent_state = {}
+                return (
+                    "❌ I couldn't save that request, so **nothing has been "
+                    "recorded**. Please try again, or contact HR directly."
+                )
             ctx.active_agent = None
             ctx.agent_state = {}
             return (

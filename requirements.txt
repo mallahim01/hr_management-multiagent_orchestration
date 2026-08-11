@@ -11,7 +11,9 @@ langgraph>=0.0.40
 grandalf>=0.8
 
 # CrewAI (real Agent/Task/Crew orchestration)
-crewai>=0.28.0
+# The litellm extra is required for any provider CrewAI does not resolve
+# natively — including Groq, which is this project's default.
+crewai[litellm]>=0.28.0
 
 # Google ADK (real Agent + tool-dispatch orchestration)
 google-adk>=1.0.0

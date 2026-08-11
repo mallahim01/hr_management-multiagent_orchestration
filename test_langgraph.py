@@ -11,7 +11,9 @@ Covers:
   4. Slot-fill continuation    – active agent bypasses intent detection
   5. Unknown-agent fallback    – a stale session name cannot crash the graph
   6. Detector-failure fallback – an LLM error degrades to GeneralAssistantAgent
-  7. Native parity             – same input, same routing decision as native
+  7. Agent-node containment    – an agent raising cannot abort the graph
+  8. Execution trace           – the result reports the nodes actually visited
+  9. Native parity             – same input, same routing decision as native
 
 Usage: python test_langgraph.py
 """
@@ -25,6 +27,7 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agents import AGENT_REGISTRY
+from core.logger import InteractionLogger
 from core.session import SessionContext
 from database.db import DatabaseManager
 from database.schema import initialize_database
@@ -269,7 +272,61 @@ def test_detector_failure_falls_back_to_general() -> None:
     assert result["reply"], "no reply produced on detector failure"
 
 
-# ── 7. Native parity ─────────────────────────────────────────────────────────
+# ── 7. Agent-node containment ────────────────────────────────────────────────
+
+def test_agent_exception_is_contained() -> None:
+    """
+    An agent blowing up must not abort the graph. The user gets an apology,
+    the failure is logged, and the wedged session is released.
+    """
+    log_path = os.path.join(tempfile.mkdtemp(prefix="hr_lg_fail_"), "events.log")
+    orch = LangGraphOrchestrator(StubLLM(intent="leave_balance"), make_db())
+    orch.logger = InteractionLogger(log_path)
+
+    class ExplodingAgent:
+        def handle(self, user_input, ctx):
+            raise RuntimeError("database on fire")
+
+    orch._agent_cache["LeaveBalanceAgent"] = ExplodingAgent()
+    ctx = make_ctx(active_agent="LeaveBalanceAgent")
+
+    result = orch.process("how many days left?", ctx)   # must not raise
+
+    assert result["failed"] is True, result
+    assert result["reply"], "no reply produced after a node failure"
+    assert result["agent_class"] == "LeaveBalanceAgent", result["agent_class"]
+    assert ctx.active_agent is None, "failed agent kept hold of the session"
+
+    with open(log_path, encoding="utf-8") as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    assert len(events) == 1, events
+    assert events[0]["event"] == "agent_node_failed", events[0]
+    assert events[0]["node"] == "LeaveBalanceAgent", events[0]
+    assert "database on fire" in events[0]["detail"], events[0]
+
+
+# ── 8. Execution trace ───────────────────────────────────────────────────────
+
+def test_reports_graph_path() -> None:
+    """The result carries the ordered nodes the turn actually traversed."""
+    orch = LangGraphOrchestrator(StubLLM(intent="company_question"), make_db())
+    result = orch.process("what is the wfh policy?", make_ctx())
+
+    assert result["graph_path"] == ["detect_intent", "CompanyKnowledgeAgent"], (
+        result["graph_path"]
+    )
+    assert orch.last_path == result["graph_path"], orch.last_path
+
+    # A slot-fill continuation still traverses detect_intent, which
+    # short-circuits, then the held agent.
+    ctx = make_ctx(active_agent="HRRequestAgent", last_intent="hr_request")
+    result = orch.process("a payslip copy", ctx)
+    assert result["graph_path"] == ["detect_intent", "HRRequestAgent"], (
+        result["graph_path"]
+    )
+
+
+# ── 9. Native parity ─────────────────────────────────────────────────────────
 
 def test_matches_native_routing() -> None:
     """
@@ -305,6 +362,8 @@ def main() -> None:
     check("state mutations reach the caller",    test_state_mutations_reach_the_caller)
     check("unknown active agent falls back",     test_unknown_active_agent_falls_back)
     check("detector failure falls back",         test_detector_failure_falls_back_to_general)
+    check("agent exception is contained",        test_agent_exception_is_contained)
+    check("reports the graph path taken",        test_reports_graph_path)
     check("routing matches native backend",      test_matches_native_routing)
 
     failures = [label for label, err in _results if err is not None]

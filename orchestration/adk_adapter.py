@@ -14,10 +14,11 @@ This keeps the Flask server startup instant.
 import asyncio
 import os
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from agents import AGENT_REGISTRY
 from core.intent_detector import IntentDetector
+from core.logger import InteractionLogger
 from core.session import SessionContext
 from orchestration.base import BaseOrchestrator
 
@@ -56,11 +57,20 @@ class ADKOrchestrator(BaseOrchestrator):
         self.history_size = history_size
         self._intent_detector = IntentDetector(llm)
         self._agent_cache: Dict[str, Any] = {}
+        self.logger = InteractionLogger()
 
         # Set shared references for tool functions
         global _shared_llm, _shared_db
         _shared_llm = llm
         _shared_db = db
+
+        # The session the ADK tool functions should act on. ADK invokes them
+        # through its own runner, so there is no way to pass the caller's
+        # SessionContext down as an argument; it is parked here for the
+        # duration of one process() call instead. Single-slot, so genuinely
+        # concurrent requests through this backend would race — see the
+        # concurrency note in the README.
+        self._current_ctx: Optional[SessionContext] = None
 
         # Lazy-init: runner is created on first process() call
         self._runner = None
@@ -88,7 +98,11 @@ class ADKOrchestrator(BaseOrchestrator):
             from google.adk.agents import Agent as ADKAgent
             from google.adk.runners import InMemoryRunner
 
-            model = os.getenv("ADK_MODEL", "gemini-2.0-flash")
+            # Google retires Gemini model ids on a rolling basis, and a retired
+            # id 404s — sending every turn down the native fallback path. The
+            # "-latest" alias tracks the current flash model; override with
+            # ADK_MODEL to pin a specific one.
+            model = os.getenv("ADK_MODEL", "gemini-flash-latest")
 
             # Define tool functions inline (they reference module-level _get_native)
             def handle_leave_request(user_message: str) -> dict:
@@ -101,7 +115,7 @@ class ADKOrchestrator(BaseOrchestrator):
                     dict: status and the agent response.
                 """
                 agent = _get_native("LeaveRequestAgent")
-                ctx = SessionContext(session_id="adk_session", user_id=1)
+                ctx = self._tool_ctx()
                 reply = agent.handle(user_message, ctx)
                 return {"status": "success", "response": reply}
 
@@ -115,7 +129,7 @@ class ADKOrchestrator(BaseOrchestrator):
                     dict: status and the leave balance information.
                 """
                 agent = _get_native("LeaveBalanceAgent")
-                ctx = SessionContext(session_id="adk_session", user_id=1)
+                ctx = self._tool_ctx()
                 reply = agent.handle(user_message, ctx)
                 return {"status": "success", "response": reply}
 
@@ -129,7 +143,7 @@ class ADKOrchestrator(BaseOrchestrator):
                     dict: status and the policy answer.
                 """
                 agent = _get_native("CompanyKnowledgeAgent")
-                ctx = SessionContext(session_id="adk_session", user_id=1)
+                ctx = self._tool_ctx()
                 reply = agent.handle(user_message, ctx)
                 return {"status": "success", "response": reply}
 
@@ -143,7 +157,7 @@ class ADKOrchestrator(BaseOrchestrator):
                     dict: status and the HR request ticket details.
                 """
                 agent = _get_native("HRRequestAgent")
-                ctx = SessionContext(session_id="adk_session", user_id=1)
+                ctx = self._tool_ctx()
                 reply = agent.handle(user_message, ctx)
                 return {"status": "success", "response": reply}
 
@@ -157,7 +171,7 @@ class ADKOrchestrator(BaseOrchestrator):
                     dict: status and the assistant's response.
                 """
                 agent = _get_native("GeneralAssistantAgent")
-                ctx = SessionContext(session_id="adk_session", user_id=1)
+                ctx = self._tool_ctx()
                 reply = agent.handle(user_message, ctx)
                 return {"status": "success", "response": reply}
 
@@ -236,14 +250,34 @@ class ADKOrchestrator(BaseOrchestrator):
         target_agent = intent_result.get("target_agent", "GeneralAssistantAgent")
 
         # Try ADK execution
+        reasoning = intent_result.get("reasoning", "ADK tool dispatch")
+        self._current_ctx = ctx          # what the tool functions will act on
         try:
             self._ensure_runner()
             reply = self._run_adk(user_input, ctx.session_id)
         except Exception as e:
+            # The fallback keeps the user served, but a silent one makes a
+            # misconfigured ADK indistinguishable from a working one. Say so in
+            # the result and record it, so this backend cannot pass for healthy
+            # while every turn is really being answered by the native agents.
             print(f"  [ADK] ⚠️  ADK execution failed: {e}")
             print(f"  [ADK] Falling back to native orchestration")
+            self.logger.log_event(
+                "adk_fallback",
+                session_id=ctx.session_id,
+                user_id=ctx.user_id,
+                reason_code="adk_execution_failed",
+                detail=f"{type(e).__name__}: {e}",
+                fell_back_to=target_agent,
+            )
+            reasoning = (
+                f"ADK unavailable ({type(e).__name__}) – answered by native "
+                f"{target_agent}"
+            )
             native_agent = self._get_native_agent(target_agent)
             reply = native_agent.handle(user_input, ctx)
+        finally:
+            self._current_ctx = None
 
         ctx.last_intent = intent_result.get("intent", "general")
         ctx.last_agent = target_agent
@@ -254,7 +288,7 @@ class ADKOrchestrator(BaseOrchestrator):
             "confidence":  intent_result.get("confidence", 0.9),
             "agent":       self._agent_display_name(target_agent),
             "agent_class": target_agent,
-            "reasoning":   intent_result.get("reasoning", "ADK tool dispatch"),
+            "reasoning":   reasoning,
             "session_id":  ctx.session_id,
             "backend":     self.backend_name,
         }
@@ -307,6 +341,21 @@ class ADKOrchestrator(BaseOrchestrator):
             loop.close()
 
     # ── Internal helpers ─────────────────────────────────────────
+
+    def _tool_ctx(self) -> SessionContext:
+        """
+        The SessionContext an ADK tool function should operate on.
+
+        These tools used to build a throwaway context hardcoded to user_id=1,
+        so ADK reported employee 1's leave balance and filed every record
+        against employee 1 no matter who was asking. They now act on the live
+        session for the turn.
+        """
+        if self._current_ctx is None:
+            raise RuntimeError(
+                "ADK tool invoked outside a process() call – no session context"
+            )
+        return self._current_ctx
 
     def _get_native_agent(self, agent_name: str):
         """Return a cached native agent instance."""
