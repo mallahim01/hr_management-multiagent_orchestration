@@ -281,9 +281,15 @@ def main() -> None:
         print(f"❌ No API key for provider '{provider}' in .env")
         sys.exit(1)
 
+    # Temperature 0 rather than the configured chat temperature. The retrieval
+    # suite asserts that specific facts appear in a generated answer, and at the
+    # app's default 0.7 those assertions flicker between runs — a gate that
+    # sometimes fails for no reason teaches you to ignore it. Routing and
+    # retrieval are unaffected either way (classification and embedding calls
+    # are already deterministic); this only steadies the generated prose.
     llm = LLMWrapper(model=CONFIG["llm"]["model"],
                      max_retries=CONFIG["llm"]["max_retries"],
-                     temperature=CONFIG["llm"]["temperature"],
+                     temperature=0.0,
                      provider=provider)
     golden = load_golden()
     cfg = knowledge_config(CONFIG)

@@ -1,7 +1,7 @@
 """
 test_langgraph.py – Deterministic tests for the LangGraph orchestrator.
 
-Runs entirely offline against a stub LLM and a throwaway SQLite file, so it
+Runs entirely offline against a fake LLM and a throwaway SQLite file, so it
 needs no API key, no network, and produces the same result every run.
 
 Covers:
@@ -40,7 +40,7 @@ TEST_USER_ID = 1
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
 
-class StubLLM:
+class FakeLLM:
     """
     Stand-in for LLMWrapper.
 
@@ -50,7 +50,7 @@ class StubLLM:
     recorded so tests can assert on what the graph *did not* call.
     """
 
-    CANNED_REPLY = "Stubbed assistant reply."
+    CANNED_REPLY = "Canned assistant reply."
 
     def __init__(self, intent: str = "general", fail: bool = False) -> None:
         self.intent = intent
@@ -58,13 +58,13 @@ class StubLLM:
         self.json_calls: list = []
         self.chat_calls: list = []
         # Mirror the real wrapper's attributes; the CrewAI adapter reads these.
-        self.model = "stub-model"
-        self.provider = "stub"
+        self.model = "fake-model"
+        self.provider = "fake"
 
     def chat(self, messages, json_mode=False, temperature=None) -> str:
         self.chat_calls.append(messages)
         if self.fail:
-            raise RuntimeError("stub LLM failure")
+            raise RuntimeError("fake LLM failure")
         if json_mode:
             # Extraction prompts want JSON; return "nothing extracted".
             return json.dumps({"start_date": None, "end_date": None,
@@ -74,12 +74,12 @@ class StubLLM:
     def chat_json(self, messages) -> dict:
         self.json_calls.append(messages)
         if self.fail:
-            raise RuntimeError("stub LLM failure")
+            raise RuntimeError("fake LLM failure")
         return {
             "intent": self.intent,
             "confidence": 0.95,
             "target_agent": "ignored – IntentDetector maps intent → agent",
-            "reasoning": "stubbed classification",
+            "reasoning": "canned classification",
         }
 
 
@@ -117,7 +117,7 @@ def make_ctx(**overrides) -> SessionContext:
 # ── 1. Graph structure ───────────────────────────────────────────────────────
 
 def test_graph_structure() -> None:
-    orch = LangGraphOrchestrator(StubLLM(), make_db())
+    orch = LangGraphOrchestrator(FakeLLM(), make_db())
     graph = orch._compiled.get_graph()
     nodes = set(graph.nodes)
 
@@ -145,10 +145,10 @@ def test_graph_structure() -> None:
 
 def test_implements_base_contract() -> None:
     """
-    The three abstract hooks must be genuinely callable, not `pass` stubs.
+    The three abstract hooks must be genuinely callable, not `pass` fakes.
     The factory and any future backend-agnostic caller rely on this.
     """
-    orch = LangGraphOrchestrator(StubLLM(intent="leave_balance"), make_db())
+    orch = LangGraphOrchestrator(FakeLLM(intent="leave_balance"), make_db())
     ctx = make_ctx()
 
     routed = orch.route_intent("how many days left?", ctx)
@@ -175,7 +175,7 @@ def test_routes_by_intent() -> None:
     }
     db = make_db()
     for intent, expected_agent in cases.items():
-        llm = StubLLM(intent=intent)
+        llm = FakeLLM(intent=intent)
         orch = LangGraphOrchestrator(llm, db)
         result = orch.process("some message", make_ctx())
 
@@ -198,7 +198,7 @@ def test_slot_fill_continuation_skips_detection() -> None:
     A session already owned by LeaveRequestAgent must go straight back to it,
     without spending an intent-detection call.
     """
-    llm = StubLLM(intent="general")   # would route elsewhere if detection ran
+    llm = FakeLLM(intent="general")   # would route elsewhere if detection ran
     orch = LangGraphOrchestrator(llm, make_db())
     ctx = make_ctx(
         active_agent="LeaveRequestAgent",
@@ -223,7 +223,7 @@ def test_state_mutations_reach_the_caller() -> None:
     The caller's SessionContext must be the object the agents mutate, since
     main.py/app.py persist that same instance after process() returns.
     """
-    orch = LangGraphOrchestrator(StubLLM(intent="leave_request"), make_db())
+    orch = LangGraphOrchestrator(FakeLLM(intent="leave_request"), make_db())
     ctx = make_ctx()
     assert ctx.active_agent is None
 
@@ -243,7 +243,7 @@ def test_unknown_active_agent_falls_back() -> None:
     A session row naming an agent that no longer exists must degrade to the
     fallback agent rather than raising out of the conditional edge.
     """
-    orch = LangGraphOrchestrator(StubLLM(intent="general"), make_db())
+    orch = LangGraphOrchestrator(FakeLLM(intent="general"), make_db())
     ctx = make_ctx(active_agent="RetiredAgentFromAnOldBuild")
 
     result = orch.process("hello?", ctx)
@@ -259,7 +259,7 @@ def test_detector_failure_falls_back_to_general() -> None:
     IntentDetector swallows LLM errors and returns 'general'. The graph must
     honour that rather than propagating the exception.
     """
-    class FailingClassifierLLM(StubLLM):
+    class FailingClassifierLLM(FakeLLM):
         def chat_json(self, messages):
             self.json_calls.append(messages)
             raise RuntimeError("classification unavailable")
@@ -280,7 +280,7 @@ def test_agent_exception_is_contained() -> None:
     the failure is logged, and the wedged session is released.
     """
     log_path = os.path.join(tempfile.mkdtemp(prefix="hr_lg_fail_"), "events.log")
-    orch = LangGraphOrchestrator(StubLLM(intent="leave_balance"), make_db())
+    orch = LangGraphOrchestrator(FakeLLM(intent="leave_balance"), make_db())
     orch.logger = InteractionLogger(log_path)
 
     class ExplodingAgent:
@@ -309,7 +309,7 @@ def test_agent_exception_is_contained() -> None:
 
 def test_reports_graph_path() -> None:
     """The result carries the ordered nodes the turn actually traversed."""
-    orch = LangGraphOrchestrator(StubLLM(intent="company_question"), make_db())
+    orch = LangGraphOrchestrator(FakeLLM(intent="company_question"), make_db())
     result = orch.process("what is the wfh policy?", make_ctx())
 
     assert result["graph_path"] == ["detect_intent", "CompanyKnowledgeAgent"], (
@@ -331,12 +331,12 @@ def test_reports_graph_path() -> None:
 def test_matches_native_routing() -> None:
     """
     The whole point of the pluggable backend is that swapping it changes the
-    machinery, not the behaviour. Same stub LLM, same routing decision.
+    machinery, not the behaviour. Same fake LLM, same routing decision.
     """
     db = make_db()
     for intent in ("leave_balance", "company_question", "hr_request", "general"):
-        native = NativeOrchestrator(StubLLM(intent=intent), db)
-        langgraph = LangGraphOrchestrator(StubLLM(intent=intent), db)
+        native = NativeOrchestrator(FakeLLM(intent=intent), db)
+        langgraph = LangGraphOrchestrator(FakeLLM(intent=intent), db)
 
         native_result = native.process("some message", make_ctx())
         langgraph_result = langgraph.process("some message", make_ctx())

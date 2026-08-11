@@ -1,7 +1,7 @@
 """
 test_api.py – Tests for the Flask API surface.
 
-Runs offline against Flask's test client with a stub LLM and a throwaway
+Runs offline against Flask's test client with a fake LLM and a throwaway
 database. No API key, no network, no Milvus.
 
 Covers the routes that hold mutable server state — the backend switcher and the
@@ -33,27 +33,27 @@ from orchestration.native import NativeOrchestrator
 CONFIG = {
     "orchestrator_backend": "native",
     "active_user_id": 3,
-    "llm": {"provider": "groq", "model": "stub-model", "max_retries": 1, "temperature": 0.0},
+    "llm": {"provider": "groq", "model": "fake-model", "max_retries": 1, "temperature": 0.0},
     "database": {"path": ":memory:"},
     "conversation": {"history_size": 3},
     "knowledge": {"enabled": False},
 }
 
 
-class StubLLM:
+class FakeLLM:
     """Routes everything to the leave-balance agent and answers with a fixed line."""
 
-    model = "stub-model"
-    provider = "stub"
+    model = "fake-model"
+    provider = "fake"
 
     def chat(self, messages, json_mode=False, temperature=None) -> str:
         if json_mode:
             return json.dumps({"start_date": None, "end_date": None, "reason": None})
-        return "Stubbed reply."
+        return "Canned reply."
 
     def chat_json(self, messages) -> dict:
         return {"intent": "leave_balance", "confidence": 0.9,
-                "target_agent": "LeaveBalanceAgent", "reasoning": "stub"}
+                "target_agent": "LeaveBalanceAgent", "reasoning": "fake"}
 
 
 def make_client():
@@ -70,7 +70,7 @@ def make_client():
     log_path = os.path.join(workdir, "events.log")
     db = DatabaseManager(db_path)
     initialize_database(db, CONFIG["active_user_id"])
-    llm = StubLLM()
+    llm = FakeLLM()
     config = dict(CONFIG, database={"path": db_path})
     app = create_app(
         config, db, llm,

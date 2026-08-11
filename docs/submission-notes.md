@@ -63,6 +63,7 @@ every claim below names a file you can open.
 | [`eval_system.py`](../eval_system.py) + [`evals/golden_set.json`](../evals/golden_set.json) | Golden-set evaluation: deterministic routing and retrieval scoring, LLM judge for refusal. |
 | [`eval_routing.py`](../eval_routing.py) + [`core/routing_judge.py`](../core/routing_judge.py) | LLM-as-judge scoring of routing on real logged traffic. |
 | [`verify.py`](../verify.py) | Import and DB-seeding smoke check. |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Runs every suite on two Python versions, builds the Docker image and runs the suites inside it, and fails the build on a committed secret, a machine-specific path, or a tracked `.env`. No secrets configured — the offline suites need none. |
 
 ### Logging
 
@@ -79,7 +80,8 @@ every claim below names a file you can open.
   what happened, not how long anything took.
 - **No auth.** No login, no roles. `active_user_id` is an integer in
   `config.yaml`, and the document-upload endpoint is unauthenticated.
-- **No CI.** The tests exist and pass; nothing runs them automatically.
+- **No deployment.** CI builds the image and runs the suites, but nothing is
+  deployed anywhere; there is no staging environment and no live traffic.
 - **No retrieval benchmark.** See "known limitations" in the README.
 
 ---
@@ -210,7 +212,7 @@ a fabricated answer makes it *more* credible, not less.
 
 - `test_rag.py::test_empty_retrieval_refuses_to_answer` asserts the reply is the
   refusal, that the log line was written, **and that the LLM was never called** —
-  a stub that counts invocations, so a regression reintroducing the ungrounded
+  a fake that counts invocations, so a regression reintroducing the ungrounded
   call fails the test even if the wording happens to look right.
 - `test_rag.py::test_falls_back_when_milvus_is_down` asserts the degraded reply
   says it is degraded and does *not* carry a sources block.

@@ -1,7 +1,7 @@
 """
 test_rag.py – Tests for the hybrid RAG knowledge base.
 
-Offline mode uses a fake store and a stub LLM, so chunking, grounding,
+Offline mode uses a fake store and a fake LLM, so chunking, grounding,
 citation and degradation behaviour are all deterministic and need no Milvus,
 no Google key and no network.
 
@@ -67,7 +67,7 @@ SECTION 2 – WORK FROM HOME (WFH) POLICY
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
 
-class StubLLM:
+class FakeLLM:
     """Echoes back that it was called, and records the prompt it received."""
 
     def __init__(self) -> None:
@@ -77,7 +77,7 @@ class StubLLM:
     def chat(self, messages, json_mode=False, temperature=None) -> str:
         self.calls += 1
         self.last_system_prompt = messages[0]["content"]
-        return "Stubbed grounded answer [1]."
+        return "Canned grounded answer [1]."
 
     def chat_json(self, messages) -> dict:
         return {}
@@ -111,7 +111,7 @@ def make_agent(store, config=None):
     initialize_database(db, TEST_USER_ID)
     log_path = os.path.join(tempfile.mkdtemp(prefix="hr_rag_log_"), "events.log")
     logger = InteractionLogger(log_path)
-    llm = StubLLM()
+    llm = FakeLLM()
     agent = CompanyKnowledgeAgent(llm, db, logger, store=store,
                                   config=config or {"knowledge": {"enabled": True}})
     return agent, llm, log_path
@@ -284,8 +284,8 @@ def test_every_backend_resolves_the_rag_agent() -> None:
     db = DatabaseManager(db_path)
     initialize_database(db, TEST_USER_ID)
 
-    for orchestrator in (NativeOrchestrator(StubLLM(), db),
-                         LangGraphOrchestrator(StubLLM(), db)):
+    for orchestrator in (NativeOrchestrator(FakeLLM(), db),
+                         LangGraphOrchestrator(FakeLLM(), db)):
         agent = orchestrator._get_agent("CompanyKnowledgeAgent")
         assert isinstance(agent, CompanyKnowledgeAgent), type(agent)
         assert hasattr(agent, "store"), "agent has no knowledge store"

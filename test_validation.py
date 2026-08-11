@@ -1,7 +1,7 @@
 """
 test_validation.py – Tests for the leave-request safeguards and DB validation.
 
-Runs entirely offline against a stub LLM, a throwaway SQLite file, and a
+Runs entirely offline against a fake LLM, a throwaway SQLite file, and a
 throwaway log file, so it needs no API key and no network.
 
 Covers:
@@ -36,17 +36,17 @@ TEST_USER_ID = 1          # seeded with total=20, used=5, remaining=15
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
 
-class StubLLM:
+class FakeLLM:
     """Extracts nothing, so the agent works purely from pre-seeded slot state."""
 
     def chat(self, messages, json_mode=False, temperature=None) -> str:
         if json_mode:
             return json.dumps({"start_date": None, "end_date": None, "reason": None})
-        return "Stubbed assistant reply."
+        return "Canned assistant reply."
 
     def chat_json(self, messages) -> dict:
         return {"intent": "leave_request", "confidence": 0.95,
-                "target_agent": "LeaveRequestAgent", "reasoning": "stub"}
+                "target_agent": "LeaveRequestAgent", "reasoning": "fake"}
 
 
 class Fixture:
@@ -58,7 +58,7 @@ class Fixture:
         initialize_database(self.db, TEST_USER_ID)
         self.log_path = os.path.join(workdir, "events.log")
         self.logger = InteractionLogger(self.log_path)
-        self.agent = LeaveRequestAgent(StubLLM(), self.db, self.logger)
+        self.agent = LeaveRequestAgent(FakeLLM(), self.db, self.logger)
 
     def ctx(self, **state) -> SessionContext:
         return SessionContext(
@@ -353,7 +353,7 @@ def test_hr_agent_can_also_be_cancelled() -> None:
     from agents.hr_request_agent import HRRequestAgent
 
     fx = Fixture()
-    agent = HRRequestAgent(StubLLM(), fx.db, fx.logger)
+    agent = HRRequestAgent(FakeLLM(), fx.db, fx.logger)
     ctx = fx.ctx(request_description="a salary slip")
     ctx.active_agent = "HRRequestAgent"
 

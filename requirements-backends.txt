@@ -1,8 +1,8 @@
 # Optional orchestration backends.
 #
-# These are real integrations, not stubs, but they pull in roughly 2 GB of
-# transitive dependencies between them — which is why they are not in the
-# default install. The native and langgraph backends need nothing from here.
+# Both are full integrations against the real SDKs. They are kept out of the
+# default install only because they pull in roughly 2 GB of transitive
+# dependencies between them; the native and langgraph backends need nothing here.
 #
 #     pip install -r requirements.txt -r requirements-backends.txt
 

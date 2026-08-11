@@ -1,7 +1,7 @@
 """
 test_eval.py – Tests for the LLM-as-judge routing evaluation.
 
-Default mode is offline against a stub judge: it verifies the log parsing,
+Default mode is offline against a fake judge: it verifies the log parsing,
 continuation handling, scoring arithmetic and failure behaviour, none of which
 should depend on a live model.
 
@@ -40,7 +40,7 @@ GROUND_TRUTH = [
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
 
-class StubJudgeLLM:
+class FakeJudgeLLM:
     """Returns a scripted verdict for every turn it is shown."""
 
     def __init__(self, verdict: str = "correct", fail: bool = False) -> None:
@@ -60,7 +60,7 @@ class StubJudgeLLM:
         ]
         return {"verdicts": [
             {"n": n, "verdict": self.verdict,
-             "expected_agent": "LeaveBalanceAgent", "reason": "stubbed"}
+             "expected_agent": "LeaveBalanceAgent", "reason": "canned"}
             for n in turn_numbers
         ]}
 
@@ -105,7 +105,7 @@ def test_reads_only_interaction_turns() -> None:
         turn("b", "LeaveBalanceAgent"),
         {"timestamp": "…", "event": "routing_eval", "accuracy": 1.0},
     ])
-    turns = RoutingJudge(StubJudgeLLM(), log_path=path).load_turns(limit=10)
+    turns = RoutingJudge(FakeJudgeLLM(), log_path=path).load_turns(limit=10)
     assert [t["user_input"] for t in turns] == ["a", "b"], turns
 
 
@@ -113,17 +113,17 @@ def test_tolerates_malformed_and_missing_log() -> None:
     path = write_log([turn("a", "LeaveBalanceAgent")])
     with open(path, "a", encoding="utf-8") as f:
         f.write('{"truncated": \n')          # a partially-written last line
-    turns = RoutingJudge(StubJudgeLLM(), log_path=path).load_turns(limit=10)
+    turns = RoutingJudge(FakeJudgeLLM(), log_path=path).load_turns(limit=10)
     assert len(turns) == 1, turns
 
-    missing = RoutingJudge(StubJudgeLLM(), log_path="does/not/exist.log")
+    missing = RoutingJudge(FakeJudgeLLM(), log_path="does/not/exist.log")
     assert missing.load_turns(limit=5) == []
     assert missing.evaluate(limit=5)["judged"] == 0
 
 
 def test_limit_takes_the_most_recent_oldest_first() -> None:
     path = write_log([turn(str(i), "LeaveBalanceAgent") for i in range(10)])
-    turns = RoutingJudge(StubJudgeLLM(), log_path=path).load_turns(limit=3)
+    turns = RoutingJudge(FakeJudgeLLM(), log_path=path).load_turns(limit=3)
     assert [t["user_input"] for t in turns] == ["7", "8", "9"], turns
 
 
@@ -139,7 +139,7 @@ def test_continuations_are_skipped_not_scored() -> None:
         turn("yes", "LeaveRequestAgent", intent="continuation"),
         turn("same day", "LeaveRequestAgent", intent="continuation"),
     ])
-    llm = StubJudgeLLM("correct")
+    llm = FakeJudgeLLM("correct")
     report = RoutingJudge(llm, log_path=path).evaluate(limit=10)
 
     assert report["judged"] == 1, report
@@ -149,7 +149,7 @@ def test_continuations_are_skipped_not_scored() -> None:
 
 def test_all_continuations_reports_nothing_to_grade() -> None:
     path = write_log([turn("yes", "LeaveRequestAgent", intent="continuation")])
-    llm = StubJudgeLLM()
+    llm = FakeJudgeLLM()
     report = RoutingJudge(llm, log_path=path).evaluate(limit=10)
     assert report["judged"] == 0, report
     assert report["accuracy"] is None, report
@@ -161,18 +161,18 @@ def test_all_continuations_reports_nothing_to_grade() -> None:
 def test_accuracy_excludes_ambiguous() -> None:
     """Ambiguous turns must not be silently counted as passes."""
     path = write_log([turn(str(i), "LeaveBalanceAgent") for i in range(4)])
-    report = RoutingJudge(StubJudgeLLM("ambiguous"), log_path=path).evaluate(limit=4)
+    report = RoutingJudge(FakeJudgeLLM("ambiguous"), log_path=path).evaluate(limit=4)
     assert report["ambiguous"] == 4, report
     assert report["accuracy"] is None, f"ambiguous turns inflated accuracy: {report}"
 
-    report = RoutingJudge(StubJudgeLLM("incorrect"), log_path=path).evaluate(limit=4)
+    report = RoutingJudge(FakeJudgeLLM("incorrect"), log_path=path).evaluate(limit=4)
     assert report["accuracy"] == 0.0, report
     assert report["incorrect"] == 4, report
 
 
 def test_batching_covers_every_turn() -> None:
     path = write_log([turn(str(i), "LeaveBalanceAgent") for i in range(7)])
-    llm = StubJudgeLLM("correct")
+    llm = FakeJudgeLLM("correct")
     report = RoutingJudge(llm, log_path=path, batch_size=3).evaluate(limit=7)
     assert report["judged"] == 7, report
     assert llm.calls == 3, f"expected 3 batches for 7 turns, got {llm.calls}"
@@ -182,7 +182,7 @@ def test_batching_covers_every_turn() -> None:
 def test_judge_failure_degrades_to_error_verdicts() -> None:
     """A flaky judge must not raise, and must not be scored as success."""
     path = write_log([turn(str(i), "LeaveBalanceAgent") for i in range(3)])
-    report = RoutingJudge(StubJudgeLLM(fail=True), log_path=path).evaluate(limit=3)
+    report = RoutingJudge(FakeJudgeLLM(fail=True), log_path=path).evaluate(limit=3)
     assert report["errors"] == 3, report
     assert report["accuracy"] is None, report
     assert all(r["verdict"] == "error" for r in report["results"]), report["results"]
@@ -190,7 +190,7 @@ def test_judge_failure_degrades_to_error_verdicts() -> None:
 
 def test_unknown_expected_agent_is_normalised() -> None:
     """A hallucinated agent name must not leak into the report."""
-    class HallucinatingLLM(StubJudgeLLM):
+    class HallucinatingLLM(FakeJudgeLLM):
         def chat_json(self, messages):
             return {"verdicts": [{"n": 1, "verdict": "incorrect",
                                   "expected_agent": "PayrollWizardAgent",
@@ -206,7 +206,7 @@ def test_unknown_expected_agent_is_normalised() -> None:
 def test_report_is_logged_with_misroutes() -> None:
     path = write_log([turn("a", "LeaveBalanceAgent")])
     out = os.path.join(tempfile.mkdtemp(prefix="hr_eval_out_"), "events.log")
-    judge = RoutingJudge(StubJudgeLLM("incorrect"), log_path=path)
+    judge = RoutingJudge(FakeJudgeLLM("incorrect"), log_path=path)
     report = judge.evaluate(limit=1)
     judge.log_report(report, InteractionLogger(out))
 

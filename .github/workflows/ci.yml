@@ -1,0 +1,119 @@
+name: CI
+
+# Everything here runs without secrets. The offline suites use test doubles and
+# a throwaway SQLite file, so they need no API key, no network and no Milvus —
+# which is exactly why they can gate every push.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Offline test suites
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        # requirements-backends.txt (CrewAI, ADK) is deliberately skipped: those
+        # backends are optional installs, and the suites are expected to report
+        # them as skipped rather than fail.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Imports, DB seeding, agent registry
+        run: python verify.py
+
+      - name: LangGraph orchestrator
+        run: python test_langgraph.py
+
+      - name: Leave safeguards and database validation
+        run: python test_validation.py
+
+      - name: Flask API, user and backend switching
+        run: python test_api.py
+
+      - name: Hybrid RAG grounding and degradation
+        run: python test_rag.py
+
+      - name: Routing-evaluation scoring
+        run: python test_eval.py
+
+  docker:
+    name: Docker image builds and passes its own suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: hr-multiagent-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run the offline suites inside the container
+        # Catches what a host run cannot: a CRLF or non-executable entrypoint,
+        # a missing optional dependency treated as required, or an environment
+        # variable in the image that changes what the tests actually assert.
+        run: |
+          docker run --rm --entrypoint /app/docker/entrypoint.sh \
+            hr-multiagent-app:ci test
+
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Every Python file compiles
+        run: python -m compileall -q agents core database knowledge orchestration preview
+
+      - name: config.yaml and the golden set are valid
+        run: |
+          pip install pyyaml
+          python -c "import yaml, json; yaml.safe_load(open('config.yaml', encoding='utf-8')); json.load(open('evals/golden_set.json', encoding='utf-8')); print('config.yaml and evals/golden_set.json parse')"
+
+      - name: No secrets or machine-specific paths in tracked files
+        # A hard failure rather than a warning: a leaked key in git history
+        # cannot be taken back by a later commit.
+        run: |
+          if git grep -nIE '(gsk_[A-Za-z0-9]{20}|sk-[A-Za-z0-9]{20}|AIza[A-Za-z0-9]{10}|AQ\.Ab8)' -- . ':!*.md'; then
+            echo "::error::Possible API key committed"; exit 1
+          fi
+          if git grep -nIE '([A-Z]:\\\\Users|[A-Z]:\\\\Projects|file:///[A-Za-z]:)' -- .; then
+            echo "::error::Machine-specific path committed"; exit 1
+          fi
+          echo "No secrets or absolute local paths found."
+
+      - name: .env is not tracked
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env is tracked"; exit 1
+          fi
+          echo ".env is not tracked."

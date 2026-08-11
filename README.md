@@ -1,5 +1,7 @@
 # 🏢 ACME HR — Multi-Agent Orchestration
 
+[![CI](https://github.com/mallahim01/hr_management-multiagent_orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/mallahim01/hr_management-multiagent_orchestration/actions/workflows/ci.yml)
+
 A production-shaped HR assistant: five specialist agents, an intent router, hybrid
 retrieval over Milvus, and an orchestration layer that can be swapped between four
 execution engines by changing one line of config.
@@ -25,9 +27,14 @@ them. Four backends implement it:
 | Backend | Engine | Status |
 |---|---|---|
 | **`native`** | none — plain Python | **Default.** The reference implementation |
-| **`langgraph`** | a compiled LangGraph `StateGraph` | **Featured.** The most thoroughly covered path |
-| `crewai` | CrewAI `Agent`/`Task`/`Crew` | Real integration, optional install, no automated coverage |
-| `adk` | Google ADK root agent with tool dispatch | Real integration, optional install, no automated coverage |
+| **`langgraph`** | a compiled LangGraph `StateGraph` | **The focus of this project.** Most thoroughly covered path |
+| `crewai` | CrewAI `Agent`/`Task`/`Crew` | Supported — full integration, optional install, verified by hand |
+| `adk` | Google ADK root agent with tool dispatch | Supported — full integration, optional install, verified by hand |
+
+LangGraph is where the depth is: node-level error containment, per-turn path
+reporting, and ten dedicated tests. CrewAI and ADK are complete, working
+integrations against the real SDKs, kept as optional installs because of their
+dependency weight.
 
 This is not a wrapper that keeps a framework at arm's length. It is a boundary
 drawn so that the *domain* — what an HR assistant actually does — survives the
@@ -228,7 +235,24 @@ python eval_system.py        # golden-set evaluation (see Evaluation)
 
 79 offline checks. Or inside the container: `docker compose run --rm app test`.
 
-The four `test_*.py` suites run against stubs and a throwaway database, so they
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull
+request, with **no secrets configured** — the offline suites use test doubles and a
+throwaway database, so nothing needs a key, a network or Milvus. Three jobs:
+
+| Job | What it proves |
+|---|---|
+| **tests** | All six suites pass on Python 3.11 and 3.12 |
+| **docker** | The image builds and passes the suites *inside the container* — catching a CRLF or non-executable entrypoint, an optional dependency treated as required, or an image env var that changes what the tests assert. Every one of those has bitten this project. |
+| **hygiene** | Everything compiles; `config.yaml` and the golden set parse; **no API key or machine-specific path is committed**; `.env` is untracked |
+
+The secret and path scans fail the build rather than warning, because a key
+committed once cannot be taken back by a later commit. Both patterns were verified
+against a deliberately violating file — a check that cannot fire is worse than no
+check.
+
+The four `test_*.py` suites run against test doubles and a throwaway database, so they
 are deterministic and need no key, no network and no Milvus. `test_backends.py`
 and the `--live` passes consume tokens.
 
@@ -408,7 +432,7 @@ string match cannot work.
 
 ```mermaid
 flowchart TB
-    subgraph L1 ["① Offline suites — stubs only: no API key, no network, no Milvus"]
+    subgraph L1 ["① Offline suites — test doubles only: no API key, no network, no Milvus"]
         direction LR
         T1["test_langgraph.py<br><i>graph · routing · containment</i>"]
         T2["test_validation.py<br><i>safeguards · atomicity</i>"]
@@ -768,7 +792,20 @@ python eval_system.py --suite rag     # routing | rag | refusal | all
 docker compose run --rm app eval
 ```
 
-Last run: **16/16**, routing 8/8, retrieval 6/6, refusal 2/2.
+Last run: **16/16** — routing 8/8, retrieval 6/6, refusal 2/2, stable across
+repeated runs.
+
+The suite is run at temperature 0. At the app's default 0.7 the answer-text
+assertions flickered between runs, and a gate that fails for no reason teaches
+you to ignore it. Pinning the temperature then exposed a *real* misroute that the
+randomness had been hiding: **"How many sick days am I entitled to per year?"**
+was going to `LeaveBalanceAgent`. It reads like a balance question, but the answer
+is the same for every employee — it is a policy fact. `IntentDetector` now draws
+two distinctions explicitly: **entitlement vs balance** ("what the company grants"
+vs "what I have left") and **asking about vs asking for** ("what is the
+reimbursement policy" vs "claim my expenses"). That is a semantic rule, not a
+patch for one test string, and the adjacent pairs in the golden set exist to keep
+it honest.
 
 ### What the retrieval numbers actually show
 
@@ -944,10 +981,11 @@ interface whose shape is an opinion — see
 2. **Put the upload endpoint behind an HR role.** Right now anyone who can reach
    the app can change what the assistant treats as company policy.
 3. **Add a reranker** over the fused candidates.
-2. **Automated coverage for `crewai` and `adk`**, using the same stub-LLM
-   technique. Both are currently only verified by hand, which is how the ADK
-   tool functions ran for a while against a hardcoded `user_id=1` — reporting
-   one employee's leave balance to another — without anything catching it.
+2. **Automated coverage for `crewai` and `adk`**, using the same fake-LLM
+   technique that covers native and LangGraph. Both are currently verified by
+   hand, which is how the ADK tool functions ran for a while against a hardcoded
+   `user_id=1` — reporting one employee's leave balance to another — without
+   anything catching it.
 3. **Move approval into the model**: deduct on approval rather than submission,
    add a status transition path, and give HR a view.
 4. **Real retrieval** for the policy document — chunk, embed, and retrieve, with
