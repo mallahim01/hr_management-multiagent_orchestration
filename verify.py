@@ -3,11 +3,31 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
 errors = []
+skipped = []
 
 def check(label, fn):
     try:
         fn()
         print(f"  OK  {label}")
+    except Exception as e:
+        print(f"  ERR {label}: {e}")
+        errors.append(label)
+
+
+def check_optional(label, fn, install_hint):
+    """
+    Like check(), but a missing dependency is a skip rather than a failure.
+
+    crewai and google-adk are optional installs (see requirements-backends.txt),
+    so a lean checkout or the default Docker image legitimately lacks them.
+    Anything other than ImportError is still a real error.
+    """
+    try:
+        fn()
+        print(f"  OK  {label}")
+    except ImportError:
+        print(f"  --  {label}: not installed ({install_hint})")
+        skipped.append(label)
     except Exception as e:
         print(f"  ERR {label}: {e}")
         errors.append(label)
@@ -29,9 +49,11 @@ check("knowledge package",     lambda: __import__("knowledge"))
 check("agents registry",       lambda: __import__("agents"))
 check("orchestration.base",    lambda: __import__("orchestration.base"))
 check("orchestration.native",  lambda: __import__("orchestration.native"))
-check("orchestration.crewai",  lambda: __import__("orchestration.crewai_adapter"))
 check("orchestration.langgraph",lambda: __import__("orchestration.langgraph_adapter"))
-check("orchestration.adk",     lambda: __import__("orchestration.adk_adapter"))
+check_optional("orchestration.crewai", lambda: __import__("orchestration.crewai_adapter"),
+               "pip install -r requirements-backends.txt")
+check_optional("orchestration.adk", lambda: __import__("orchestration.adk_adapter"),
+               "pip install -r requirements-backends.txt")
 check("orchestration.factory", lambda: __import__("orchestration.factory"))
 check("preview.cli_viewer",    lambda: __import__("preview.cli_viewer"))
 check("preview.html_report",   lambda: __import__("preview.html_report"))
@@ -64,6 +86,8 @@ def agent_test():
 check("Agent registry",  agent_test)
 
 print("\n" + "="*43)
+if skipped:
+    print(f"Skipped (optional, not installed): {', '.join(skipped)}")
 if errors:
     print(f"FAILED: {len(errors)} checks: {errors}")
     sys.exit(1)

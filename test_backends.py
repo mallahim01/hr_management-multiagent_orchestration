@@ -57,13 +57,24 @@ BACKENDS = ["native", "crewai", "langgraph", "adk"]
 
 # ── Run tests ────────────────────────────────────────────────────
 
-def test_backend(backend_name: str) -> None:
-    """Run all test prompts through a single backend."""
+def test_backend(backend_name: str) -> bool:
+    """
+    Run all test prompts through a single backend.
+
+    Returns False when the backend could not start — crewai and adk are optional
+    installs (requirements-backends.txt), so their absence is reported and
+    skipped rather than failing the run.
+    """
     print(f"\n{'='*70}")
     print(f"  TESTING BACKEND: {backend_name.upper()}")
     print(f"{'='*70}\n")
 
-    orchestrator = get_orchestrator(backend_name, llm, db, history_size)
+    try:
+        orchestrator = get_orchestrator(backend_name, llm, db, history_size)
+    except ImportError as e:
+        print(f"  ⊘  Skipped – {backend_name} is not installed ({e}).")
+        print(f"     Install with: pip install -r requirements-backends.txt\n")
+        return False
     session_mgr = SessionManager(db, history_size)
     session_id = str(uuid.uuid4())
 
@@ -99,19 +110,22 @@ def test_backend(backend_name: str) -> None:
         print()
 
     print(f"\n  ✅  Backend '{backend_name}' test complete.\n")
+    return True
 
 
 def main():
     print("\n" + "█"*70)
     print("  Multi-Agent HR Demo – Backend Test Suite")
-    print("  Testing all 4 orchestration backends sequentially")
+    print("  Testing each installed orchestration backend sequentially")
     print("█"*70)
 
-    for backend in BACKENDS:
-        test_backend(backend)
+    tested = [b for b in BACKENDS if test_backend(b)]
+    skipped = [b for b in BACKENDS if b not in tested]
 
     print("\n" + "█"*70)
-    print("  ALL 4 BACKENDS TESTED SUCCESSFULLY")
+    print(f"  TESTED: {', '.join(tested) or 'none'}")
+    if skipped:
+        print(f"  SKIPPED (not installed): {', '.join(skipped)}")
     print("█"*70 + "\n")
 
 

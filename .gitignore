@@ -12,3 +12,8 @@ data/*.db-shm
 data/interactions.log
 data/report.html
 data/langgraph_flow.png
+
+# Live logs are ignored, but the captured sample run in logs/ is committed
+# on purpose so the system's behaviour is inspectable without running it.
+logs/*.log
+!logs/sample-session.log

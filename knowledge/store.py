@@ -51,12 +51,17 @@ class MilvusKnowledgeStore:
         dimension: int = 768,
         token: str = "",
         rrf_k: int = 60,
+        connect_timeout: float = 5.0,
     ) -> None:
         self.uri = uri
         self.collection = collection
         self.dimension = dimension
         self.token = token
         self.rrf_k = rrf_k
+        # Without an explicit timeout the client blocks for a long time when
+        # Milvus is down, which turns a degraded knowledge base into a hung UI.
+        # Failing fast lets the agent fall back and the Knowledge tab say why.
+        self.connect_timeout = connect_timeout
         self.embedder = embedder or GeminiEmbedder(dimension=dimension)
         self._client = None
         self._ready = False
@@ -71,7 +76,7 @@ class MilvusKnowledgeStore:
     def _connect(self):
         if self._client is None:
             from pymilvus import MilvusClient
-            kwargs: Dict[str, Any] = {"uri": self.uri}
+            kwargs: Dict[str, Any] = {"uri": self.uri, "timeout": self.connect_timeout}
             if self.token:
                 kwargs["token"] = self.token
             self._client = MilvusClient(**kwargs)

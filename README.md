@@ -30,7 +30,56 @@ the same input.
 
 ---
 
-## Quick Start
+## Quick Start — Docker (recommended)
+
+Brings up Milvus, its etcd and MinIO dependencies, and the app. On first start
+the app waits for Milvus, ingests `data/company_policy.txt`, then serves.
+
+```bash
+git clone https://github.com/mallahim01/hr_management-multiagent_orchestration.git
+cd hr_management-multiagent_orchestration
+
+cp .env.example .env          # add GROQ_API_KEY and GOOGLE_API_KEY
+docker compose up --build     # first build ~4 min
+
+# → http://localhost:5000
+```
+
+| Command | What it does |
+|---|---|
+| `docker compose up --build` | full stack |
+| `docker compose run --rm app test` | the offline suites, inside the container |
+| `docker compose run --rm app eval` | golden-set evaluation |
+| `docker compose run --rm app ingest handbook.md` | ingest a document |
+| `docker compose logs -f app` | follow the app log |
+| `docker compose down -v` | stop and delete the Milvus volumes |
+
+The image installs the `native` and `langgraph` backends only — `crewai` and
+`google-adk` add roughly 2 GB between them. Switching to one of those in the UI
+returns a clear error rather than failing at startup. To include them:
+
+```bash
+INSTALL_ALL_BACKENDS=true docker compose up --build
+```
+
+Ports are configurable, so this can sit alongside another stack:
+
+```bash
+MILVUS_HOST_PORT=19531 MILVUS_METRICS_PORT=9092 APP_HOST_PORT=5001 docker compose up
+```
+
+> **Give Docker at least 6 GB.** Milvus standalone plus etcd and MinIO idles
+> around 250 MB but peaks well above that while loading. On an 8 GB Docker
+> allocation, running **two** Milvus standalone instances gets both OOM-killed
+> (exit 137) — remapping the ports avoids the port clash but not the memory one.
+> Stop any other Milvus before bringing this up.
+
+`./data` and `./logs` are bind-mounted, so the SQLite database and the
+interaction log survive a rebuild and can be read from the host.
+
+---
+
+## Quick Start — local Python
 
 ### 1. Clone and install dependencies
 
@@ -41,6 +90,9 @@ cd hr_management-multiagent_orchestration
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+
+# Optional: the crewai and adk backends (~2 GB of extra dependencies)
+pip install -r requirements-backends.txt
 ```
 
 ### 2. Set your API key
@@ -91,12 +143,17 @@ Open **http://127.0.0.1:5000** for the web UI.
 python verify.py             # imports, DB seeding, agent registry
 python test_langgraph.py     # LangGraph orchestrator      – offline, no API key
 python test_validation.py    # leave safeguards + DB rules – offline, no API key
-python test_eval.py          # routing-eval scoring logic  – offline, no API key
+python test_api.py           # Flask routes, user + backend switching – offline
 python test_rag.py           # chunking, grounding, citations – offline, no API key
+python test_eval.py          # routing-eval scoring logic  – offline, no API key
 python test_eval.py --live   # …plus a live judge probe against labelled data
 python test_rag.py  --live   # …plus real Milvus + Gemini retrieval checks
-python test_backends.py      # all 4 backends against the live LLM (costs tokens)
+python test_backends.py      # each installed backend against the live LLM
+
+python eval_system.py        # golden-set evaluation (see Evaluation)
 ```
+
+79 offline checks. Or inside the container: `docker compose run --rm app test`.
 
 The four `test_*.py` suites run against stubs and a throwaway database, so they
 are deterministic and need no key, no network and no Milvus. `test_backends.py`
@@ -115,23 +172,184 @@ whether each one reached the right agent. See [Evaluation](#evaluation).
 
 ## Architecture
 
+### Components
+
+```mermaid
+flowchart TB
+    subgraph clients [" "]
+        UI["Chat UI<br><i>frontend/index.html</i>"]
+        CLI["CLI<br><i>main.py</i>"]
+    end
+
+    API["Flask API<br><i>app.py</i>"]
+    SM["SessionManager<br><i>core/session.py</i>"]
+    LOG["InteractionLogger<br><i>core/logger.py</i>"]
+
+    subgraph orch ["Orchestration — one interface, four engines"]
+        BASE["BaseOrchestrator<br><i>orchestration/base.py</i>"]
+        NAT["native"]
+        LG["<b>langgraph</b><br>StateGraph"]
+        CREW["crewai<br><i>optional</i>"]
+        ADK["adk<br><i>optional</i>"]
+    end
+
+    ID["IntentDetector<br><i>core/intent_detector.py</i>"]
+
+    subgraph agents ["Agents — AGENT_REGISTRY"]
+        A1["LeaveRequestAgent<br>slot-filling + validation"]
+        A2["LeaveBalanceAgent"]
+        A3["CompanyKnowledgeAgent<br>hybrid RAG"]
+        A4["HRRequestAgent"]
+        A5["GeneralAssistantAgent"]
+    end
+
+    subgraph stores ["Persistence"]
+        DB[("SQLite<br>users, leave, sessions,<br>conversation history")]
+        MV[("Milvus<br>hr_knowledge_base<br>dense + BM25")]
+    end
+
+    GROQ{{"Groq<br>chat models"}}
+    GEM{{"Google<br>embeddings"}}
+
+    UI --> API
+    CLI --> BASE
+    API --> SM
+    API --> BASE
+    API --> LOG
+    SM <--> DB
+    BASE -.implemented by.-> NAT & LG & CREW & ADK
+    NAT & LG & CREW --> ID
+    ADK -->|"Gemini picks the tool"| agents
+    ID --> GROQ
+    NAT & LG & CREW --> agents
+    A1 & A2 & A4 --> DB
+    A3 --> MV
+    A3 --> GEM
+    A1 & A2 & A3 & A4 & A5 --> GROQ
+    A1 & A3 --> LOG
+
+    classDef store fill:#1a3a52,stroke:#4a90d9,color:#e8f4fd
+    classDef ext fill:#3d2f1f,stroke:#d99b4a,color:#fdf4e8
+    classDef hero fill:#1f3d2f,stroke:#4ad98b,color:#e8fdf4
+    class DB,MV store
+    class GROQ,GEM ext
+    class LG hero
 ```
-User Input
-    │
-    ▼
-Orchestrator (selectable via config.yaml)
-    │
-    ├── IntentDetector (LLM)
-    │     └── returns: intent + confidence + target_agent
-    │
-    ├── If mid-slot-fill → continue with active agent
-    │
-    └── Route to matched Agent
-          ├── LeaveRequestAgent      (multi-turn slot-filling)
-          ├── LeaveBalanceAgent      (DB lookup)
-          ├── CompanyKnowledgeAgent  (policy-grounded)
-          ├── HRRequestAgent         (DB insert + ticket)
-          └── GeneralAssistantAgent  (fallback)
+
+### One turn, end to end
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Employee
+    participant API as Flask API
+    participant S as SessionManager
+    participant O as Orchestrator
+    participant D as IntentDetector
+    participant A as Agent
+    participant M as Milvus / SQLite
+    participant L as Logger
+
+    U->>API: POST /api/chat
+    API->>S: get_or_create(session_id)
+    S->>M: load active_agent + agent_state
+    API->>O: process(user_input, ctx)
+
+    alt mid slot-fill (ctx.active_agent set)
+        Note over O,D: classification skipped —<br/>no routing decision this turn
+        O->>A: continue with the held agent
+    else fresh turn
+        O->>D: detect(user_input, history)
+        D-->>O: intent, confidence, target_agent
+        O->>A: invoke target agent
+    end
+
+    alt policy question
+        A->>M: hybrid search (dense + BM25 → RRF)
+        M-->>A: top-k chunks with provenance
+        Note over A: no chunks → decline,<br/>never answer ungrounded
+    else leave request
+        A->>M: check balance + overlapping requests
+        Note over A: fails validation → reject,<br/>nothing written
+    end
+
+    A-->>O: reply
+    O-->>API: reply + intent + agent + graph_path
+    API->>S: persist active_agent, agent_state
+    API->>L: append interaction + any domain event
+    API-->>U: reply with cited sources
+```
+
+### The LangGraph backend
+
+`orchestrator_backend: langgraph` compiles this graph once at construction and
+streams every turn through it, so the path each turn took is reported rather than
+inferred:
+
+```mermaid
+flowchart LR
+    START(["__start__"]) --> DI{{"detect_intent<br><i>short-circuits when<br>mid slot-fill</i>"}}
+    DI -->|leave_request| LR["LeaveRequestAgent"]
+    DI -->|leave_balance| LB["LeaveBalanceAgent"]
+    DI -->|company_question| CK["CompanyKnowledgeAgent"]
+    DI -->|hr_request| HR["HRRequestAgent"]
+    DI -->|general / unknown| GA["GeneralAssistantAgent"]
+    LR & LB & CK & HR & GA --> END(["__end__"])
+
+    classDef fallback fill:#3d2f1f,stroke:#d99b4a,color:#fdf4e8
+    class GA fallback
+```
+
+An unrecognised agent name routes to `GeneralAssistantAgent` instead of raising,
+and an exception inside any node is contained rather than aborting the graph.
+
+### Retrieval path
+
+```mermaid
+flowchart LR
+    Q["Question"] --> E["Gemini embed<br>RETRIEVAL_QUERY"]
+    Q --> B["BM25<br><i>computed by Milvus</i>"]
+    E --> DV["dense_vector<br>HNSW · COSINE"]
+    B --> SV["sparse_vector<br>SPARSE_INVERTED_INDEX"]
+    DV -->|"top candidate_k"| RRF{{"Reciprocal<br>Rank Fusion"}}
+    SV -->|"top candidate_k"| RRF
+    RRF -->|"top_k"| C["Numbered extracts<br>+ provenance"]
+    C --> LLM["Groq"]
+    LLM --> ANS["Answer with<br>[1] [2] citations"]
+
+    ING["HR upload<br>txt · md · pdf"] --> CH["Chunk, keeping<br>the heading trail"]
+    CH --> ED["Gemini embed<br>RETRIEVAL_DOCUMENT"]
+    ED --> COL[("hr_knowledge_base")]
+    COL -.-> DV
+    COL -.-> SV
+
+    classDef store fill:#1a3a52,stroke:#4a90d9,color:#e8f4fd
+    class COL store
+```
+
+### Container topology
+
+```mermaid
+flowchart TB
+    subgraph compose ["docker compose"]
+        APP["hr-app<br><i>Flask + agents + UI</i><br>:5000"]
+        MIL["hr-milvus<br>:19530"]
+        ETCD["hr-etcd<br><i>metadata</i>"]
+        MINIO["hr-minio<br><i>object storage</i>"]
+        VOL[("named volumes<br>etcd · minio · milvus")]
+    end
+    HOST["./data · ./logs<br><i>bind-mounted</i>"]
+    EXT{{"Groq · Google<br><i>via .env</i>"}}
+
+    APP -->|"grpc"| MIL
+    MIL --> ETCD & MINIO
+    ETCD & MINIO & MIL --- VOL
+    APP --- HOST
+    APP --> EXT
+    Browser(["localhost:5000"]) --> APP
+
+    classDef store fill:#1a3a52,stroke:#4a90d9,color:#e8f4fd
+    class VOL,HOST store
 ```
 
 ### Switching Orchestration Backend
@@ -145,6 +363,18 @@ orchestrator_backend: native     # or: crewai | langgraph | adk
 Or switch live from the web UI's sidebar (`POST /api/backend`). Session state
 lives in SQLite rather than inside any backend, so a conversation survives the
 swap — you can begin a leave request under LangGraph and finish it under Native.
+
+### Switching employee
+
+Three employees are seeded, each with their own leave balance and history. The
+sidebar switches between them (`POST /api/user`), so you can watch the same
+question return different answers depending on who is asking.
+
+This is a **demo persona switch, not authentication** — there is no login and no
+authorisation anywhere in this project. Switching starts a new conversation on
+purpose: slot-filling state is keyed by session rather than by employee, so
+continuing a half-filled leave request after a switch would file it against the
+wrong person.
 
 ### LangGraph specifics
 
@@ -169,6 +399,9 @@ trap the conversation, and an `agent_node_failed` event is logged.
 ├── agents/               # 5 specialised sub-agents
 ├── core/                 # LLM wrapper, intent detector, session, logger, routing judge
 ├── knowledge/            # chunking, Gemini embeddings, Milvus hybrid store
+├── evals/                # golden_set.json — hand-labelled evaluation cases
+├── logs/                 # JSONL interaction log + a committed sample session
+├── docker/               # container entrypoint
 ├── docs/                 # Architecture deep-dive
 ├── orchestration/        # 4 backends + abstract base + factory
 ├── database/             # SQLite schema + CRUD helpers
@@ -182,7 +415,10 @@ trap the conversation, and an `agent_node_failed` event is logged.
 ```
 
 See [docs/architecture.md](docs/architecture.md) for how agents, orchestrators,
-and session state fit together.
+and session state fit together, and
+[docs/submission-notes.md](docs/submission-notes.md) for a file-by-file map of
+the load-bearing code, what is and isn't mine, and the failure modes this system
+was designed against.
 
 ---
 
@@ -259,6 +495,8 @@ leave a request with no matching deduction. See `python test_validation.py`.
 | GET | `/` | Chat UI |
 | POST | `/api/chat` | Send a message |
 | GET | `/api/status` | System info |
+| GET | `/api/users` | Seeded employees with leave balances |
+| POST | `/api/user` | Switch the acting employee |
 | POST | `/api/backend` | Switch orchestration backend at runtime |
 | GET | `/api/graph` | Compiled StateGraph + last node path (LangGraph only) |
 | GET | `/api/eval` | LLM-as-judge scoring of recent routing |
@@ -363,8 +601,73 @@ LangGraph, CrewAI and ADK all use RAG without knowing Milvus exists.
 
 ## Evaluation
 
-Routing is the one decision this system makes on its own, so it is the one thing
-worth scoring. `python eval_routing.py` (or the **Evals** tab, or `GET /api/eval`)
+Two evaluations, answering different questions.
+
+| | `eval_system.py` | `eval_routing.py` |
+|---|---|---|
+| **Question** | "does the system still do what we decided it should?" | "was the routing on real traffic correct?" |
+| **Input** | `evals/golden_set.json` — 16 hand-labelled cases | whatever is in the interaction log |
+| **Scoring** | deterministic for routing and retrieval; LLM judge only for refusal | LLM as judge throughout |
+| **Ground truth** | yes, written before the run | none — open-ended traffic |
+| **Use** | regression gate; exits non-zero on any failure | spot-checking production behaviour |
+
+### `eval_system.py` — golden set
+
+`evals/golden_set.json` holds expected answers written by hand, so a pass means
+the system matched a fixed expectation rather than an expectation written to fit
+the system. Three suites:
+
+**1. Routing (deterministic, no judge).** The expected agent is a string; the run
+matches it or it does not. Includes deliberately adjacent pairs — *"What is the
+reimbursement policy?"* (policy → knowledge agent) against *"I need to claim my
+travel expenses"* (action → HR agent) — because that boundary is where an
+intent classifier actually fails.
+
+**2. Retrieval (deterministic).** Checks the expected policy section appears in
+the retrieved chunks and that expected facts appear in the answer. Also reports
+recall@1 for each arm alone against the fused result.
+
+**3. Refusal (LLM as judge).** *Did it decline to invent a policy?* cannot be a
+string match, so this suite uses a judge — but a narrow one, asked a single
+yes/no question with a fixed rubric, not "is this answer good".
+
+```bash
+python eval_system.py                 # all three suites
+python eval_system.py --suite rag     # routing | rag | refusal | all
+docker compose run --rm app eval
+```
+
+Last run: **16/16**, routing 8/8, retrieval 6/6, refusal 2/2.
+
+### What the retrieval numbers actually show
+
+The per-arm comparison is reported because it is the honest test of the hybrid
+claim, and on this corpus it does not support it:
+
+```
+recall@1 over 5 pinned cases:  dense-only 5/5 | sparse-only 5/5 | hybrid 5/5
+```
+
+**On a 29-chunk policy document, fusion buys nothing measurable.** Either arm
+alone already ranks the right chunk first. Part of the reason is a choice made
+earlier: chunks are prefixed with their heading trail before embedding, which
+puts literal strings like `LWP` into the dense vector and removes exactly the
+weakness BM25 was there to cover.
+
+Hybrid retrieval is kept anyway, for reasons that are about where this goes
+rather than where it is: BM25 degrades far more gracefully as a corpus grows and
+as queries contain identifiers the embedding model never saw, and the fusion
+plumbing is the part that is annoying to retrofit later. But this is currently
+an architectural bet, not a measured win, and the eval prints the number that
+says so on every run.
+
+The other honest gap: **6 retrieval cases is not a benchmark.** There is no
+labelled recall@k set over a realistic corpus, so "retrieval works" here means
+"works on the cases I thought to write down".
+
+### `eval_routing.py` — LLM as judge over real traffic
+
+`python eval_routing.py` (or the **Evals** tab, or `GET /api/eval`)
 replays recent turns out of the interaction log and asks the model, after the fact
 and with the agent's actual reply in view, whether each turn reached the right
 agent.
@@ -455,9 +758,10 @@ any difference between them is framework overhead, not behaviour.
 
 ### Known limitations
 
-- **Single hard-coded user.** `active_user_id` comes from `config.yaml`. There is
-  no authentication, no authorisation, and no notion of "who is asking" beyond
-  that integer — so anyone hitting the API acts as that employee.
+- **No authentication.** The employee can be switched from the sidebar, but that
+  is a persona picker, not a login: there is no password, no session identity and
+  no authorisation. Anyone who can reach the API can act as any employee and read
+  their leave history.
 - **Approval is cosmetic.** Requests are stored as `Pending` and nobody can
   approve them; there is no HR-side view. The balance is deducted at submission
   rather than on approval, which is the wrong policy for a real system but keeps
@@ -473,6 +777,11 @@ any difference between them is framework overhead, not behaviour.
   policy documents that the assistant will then cite as authoritative. In a real
   deployment this endpoint needs to sit behind an HR role.
 - **Scanned PDFs are not handled** — text extraction only, no OCR.
+- **The container stack has no resource limits.** Compose declares no `mem_limit`,
+  so Milvus can be OOM-killed under memory pressure rather than degrading. This
+  is observable: on an 8 GB Docker allocation, two Milvus standalone instances
+  kill each other with exit 137.
+- **No log rotation and no redaction.** See [logs/README.md](logs/README.md).
 - **No concurrency story.** SQLite in WAL mode tolerates concurrent reads, and the
   balance deduction is guarded against going negative, but there is no locking
   around the read-validate-write sequence across separate HTTP requests.

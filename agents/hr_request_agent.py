@@ -24,8 +24,22 @@ class HRRequestAgent(BaseAgent):
     display_name = "HR Request Agent"
     colour = "orange"
 
+    CANCEL_WORDS = {"no", "n", "cancel", "nope", "nah", "nevermind", "stop",
+                    "abort", "quit", "exit", "forget"}
+    CANCEL_PHRASES = ("cancel", "changed my mind", "never mind", "nevermind",
+                      "forget it", "start over", "not now")
+
     def handle(self, user_input: str, ctx: SessionContext) -> str:
         state = ctx.agent_state
+
+        # This agent holds the session across turns, and while it does the
+        # orchestrator skips routing — so the user needs an unconditional way
+        # out, not just one while a confirmation is pending.
+        if self._is_cancellation(user_input):
+            ctx.active_agent = None
+            ctx.agent_state = {}
+            return ("No problem! I've cancelled that request. "
+                    "Let me know if you need anything else.")
 
         if state.get("awaiting_confirmation"):
             return self._handle_confirmation(user_input, ctx, state)
@@ -49,15 +63,16 @@ class HRRequestAgent(BaseAgent):
             f"Would you like me to go ahead and submit this to the HR team? (yes / no)"
         )
 
+    @classmethod
+    def _is_cancellation(cls, user_input: str) -> bool:
+        """True when the user is trying to abandon the HR request flow."""
+        lowered = user_input.lower()
+        return bool(set(lowered.split()) & cls.CANCEL_WORDS) or \
+            any(phrase in lowered for phrase in cls.CANCEL_PHRASES)
+
     def _handle_confirmation(self, user_input: str, ctx: SessionContext, state: dict) -> str:
         words = set(user_input.lower().split())
-        cancel_words = {"no", "n", "cancel", "nope", "nah", "nevermind", "stop", "abort"}
         yes_words = {"yes", "y", "confirm", "sure", "ok", "yep", "yeah", "submit", "go"}
-
-        if words & cancel_words or "cancel" in user_input.lower() or "changed my mind" in user_input.lower():
-            ctx.active_agent = None
-            ctx.agent_state = {}
-            return "No problem! Your HR request has been cancelled. Let me know if there's anything else I can help with."
 
         if words & yes_words:
             try:

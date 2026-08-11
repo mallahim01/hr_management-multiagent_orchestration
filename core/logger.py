@@ -1,12 +1,18 @@
 """
 core/logger.py
 ──────────────
-Appends timestamped JSON records to data/interactions.log.
+Appends timestamped JSON records to logs/interactions.log.
 Kept intentionally simple – one line per record for easy grep / review.
 
 Two record shapes share the file, distinguished by the "event" field:
   • "interaction"  – one conversation turn (written by main.py / app.py)
   • anything else  – a structured domain event, e.g. a rejected leave request
+
+Both shapes live in one file on purpose: when a leave request is refused, the
+turn and the reason sit next to each other in timestamp order, which is what
+you actually want when reconstructing what happened.
+
+See logs/README.md for the record reference and a captured sample run.
 """
 
 import json
@@ -14,12 +20,16 @@ import os
 from datetime import datetime
 from typing import Any, Optional
 
+DEFAULT_LOG_PATH = os.path.join("logs", "interactions.log")
+
 
 class InteractionLogger:
     """Writes one JSON line per interaction turn to a log file."""
 
-    def __init__(self, log_path: str = "data/interactions.log") -> None:
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    def __init__(self, log_path: str = DEFAULT_LOG_PATH) -> None:
+        directory = os.path.dirname(log_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
         self.log_path = log_path
 
     def log(

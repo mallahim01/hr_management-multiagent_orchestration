@@ -22,6 +22,15 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# knowledge_config() lets KNOWLEDGE__* environment variables override whatever a
+# caller passes, which is what makes the container able to point at a different
+# Milvus. That also means a stray KNOWLEDGE__ENABLED in the environment would
+# silently decide the outcome of these tests, so the offline suite clears them.
+_CLEARED_ENV = {k: os.environ.pop(k) for k in list(os.environ)
+                if k.startswith("KNOWLEDGE__")}
+if _CLEARED_ENV:
+    print(f"  (ignoring ambient {', '.join(sorted(_CLEARED_ENV))} for these tests)")
+
 from agents.company_knowledge_agent import NO_RESULTS_REPLY, CompanyKnowledgeAgent
 from core.logger import InteractionLogger
 from core.session import SessionContext
@@ -289,6 +298,7 @@ def run_live_probe() -> int:
     from dotenv import load_dotenv
     import yaml
     load_dotenv()
+    os.environ.update(_CLEARED_ENV)      # the live probe should honour them
     config = yaml.safe_load(open("config.yaml", encoding="utf-8"))
 
     from knowledge import build_store

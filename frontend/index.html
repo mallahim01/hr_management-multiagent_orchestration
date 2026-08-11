@@ -31,15 +31,28 @@
 html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
 
 /* ── Layout ─────────────────────────────────────────────── */
-#app { display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 100vh; height: 100vh; }
+#app { display: grid; grid-template-columns: 296px 1fr; grid-template-rows: 100vh; height: 100vh; }
 
-/* Narrow screens: sidebar collapses above the chat instead of squeezing it */
-@media (max-width: 860px) {
-  html, body { overflow: auto; }
-  #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: auto; min-height: 100vh; }
-  #sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 45vh; }
-  #main { height: 55vh; min-height: 380px; }
-  .msg { max-width: 95%; }
+/* Narrow screens: the sidebar becomes a drawer toggled from the header, so
+   the chat keeps the full viewport instead of being squeezed into half. */
+#sidebar-toggle { display: none; }
+@media (max-width: 900px) {
+  #app { grid-template-columns: 1fr; }
+  #sidebar {
+    position: fixed; inset: 0 auto 0 0; width: min(310px, 86vw); z-index: 40;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: var(--shadow);
+  }
+  #sidebar.open { transform: none; }
+  #sidebar-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    width: 34px; height: 34px; cursor: pointer; color: var(--text); font-size: 1rem;
+    flex-shrink: 0;
+  }
+  #scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; }
+  .msg { max-width: 94%; }
+  .quick-prompts { flex-wrap: nowrap; overflow-x: auto; }
 }
 
 /* ── Sidebar ─────────────────────────────────────────────── */
@@ -70,10 +83,29 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 .sidebar-section { padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
 .section-label { font-size: .65rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .6rem; }
 
-/* User card */
-.user-card { background: var(--card); border-radius: var(--radius); padding: .75rem; }
-.user-name { font-weight: 600; font-size: .9rem; }
-.user-dept { font-size: .75rem; color: var(--muted); margin-top: .1rem; }
+/* User switcher */
+.user-list { display: flex; flex-direction: column; gap: .4rem; }
+.user-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: .6rem .7rem; cursor: pointer; transition: all .18s;
+  display: flex; align-items: center; gap: .6rem; text-align: left; width: 100%;
+  color: var(--text); font-family: inherit;
+}
+.user-card:hover:not(.active):not(:disabled) { border-color: var(--accent); background: rgba(124,106,247,.08); }
+.user-card.active { border-color: var(--accent); background: rgba(124,106,247,.14); }
+.user-card:disabled { opacity: .55; cursor: wait; }
+.user-av {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .72rem; font-weight: 700; color: #fff; background: var(--accent);
+}
+.user-card:nth-child(2) .user-av { background: var(--blue); }
+.user-card:nth-child(3) .user-av { background: var(--orange); }
+.user-meta { min-width: 0; flex: 1; }
+.user-name { font-weight: 600; font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-dept { font-size: .68rem; color: var(--muted); margin-top: .05rem; }
+.user-bal { font-size: .68rem; font-weight: 700; color: var(--green); flex-shrink: 0; }
+.user-card.active .user-name::after { content: " ●"; color: var(--accent2); font-size: .6rem; vertical-align: middle; }
 
 /* Backend selector */
 .backend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
@@ -135,15 +167,18 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 .kb-pill.down { background: rgba(239,68,68,.15);  color: var(--red); }
 .kb-pill.warn { background: rgba(245,158,11,.15); color: var(--yellow); }
 
+/* `display:block` matters: a <label> is inline by default, so without it the
+   icon and the two lines of text flow side by side and overlap the button. */
 .dropzone {
-  border: 1px dashed var(--border); border-radius: var(--radius);
-  padding: 1.5rem 1rem; text-align: center; cursor: pointer;
+  display: block; border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 1.75rem 1rem; text-align: center; cursor: pointer;
   transition: all .2s; background: var(--bg);
 }
 .dropzone:hover, .dropzone.drag { border-color: var(--accent); background: rgba(124,106,247,.07); }
-.dropzone .dz-icon { font-size: 1.6rem; display: block; margin-bottom: .4rem; }
-.dropzone .dz-main { font-size: .85rem; }
-.dropzone .dz-sub  { font-size: .68rem; color: var(--muted); margin-top: .25rem; }
+.dropzone.ready { border-style: solid; border-color: var(--green); background: rgba(34,197,94,.06); }
+.dropzone .dz-icon { font-size: 1.7rem; display: block; margin-bottom: .5rem; line-height: 1; }
+.dropzone .dz-main { display: block; font-size: .85rem; }
+.dropzone .dz-sub  { display: block; font-size: .68rem; color: var(--muted); margin-top: .3rem; }
 
 .kb-tabs { display: flex; gap: .4rem; margin-bottom: .75rem; }
 .kb-tab {
@@ -258,12 +293,35 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 .tab-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
 .tab-panel.active { display: flex; }
 
-/* Messages */
+/* Messages — capped and centred so lines stay readable on a wide screen */
 #messages {
-  flex: 1; overflow-y: auto; padding: 1.25rem;
-  display: flex; flex-direction: column; gap: .75rem;
+  flex: 1; overflow-y: auto; padding: 1.5rem 1.25rem 2rem;
+  display: flex; flex-direction: column; gap: 1rem;
   scroll-behavior: smooth;
+  width: 100%; max-width: 860px; margin: 0 auto;
 }
+
+/* Empty state */
+.empty-hero { margin: auto 0; padding: 1rem 0 2rem; text-align: center; }
+.empty-hero .eh-icon {
+  width: 56px; height: 56px; margin: 0 auto .9rem; border-radius: 16px;
+  display: flex; align-items: center; justify-content: center; font-size: 1.6rem;
+  background: linear-gradient(140deg, var(--accent), var(--purple));
+  box-shadow: 0 8px 24px rgba(124,106,247,.35);
+}
+.empty-hero h2 { font-size: 1.15rem; font-weight: 650; margin-bottom: .35rem; }
+.empty-hero p { font-size: .85rem; color: var(--muted); max-width: 46ch; margin: 0 auto; line-height: 1.6; }
+.cap-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  gap: .6rem; margin-top: 1.4rem; text-align: left;
+}
+.cap {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: .7rem .85rem; cursor: pointer; transition: all .18s;
+}
+.cap:hover { border-color: var(--accent); background: rgba(124,106,247,.08); transform: translateY(-1px); }
+.cap-t { font-size: .8rem; font-weight: 600; display: flex; align-items: center; gap: .4rem; }
+.cap-d { font-size: .7rem; color: var(--muted); margin-top: .2rem; line-height: 1.45; }
 
 /* Scrollbar */
 #messages::-webkit-scrollbar { width: 4px; }
@@ -294,8 +352,19 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
 .msg.assistant .bubble {
   background: var(--card); border: 1px solid var(--border);
-  border-bottom-left-radius: 4px; white-space: pre-wrap;
+  border-bottom-left-radius: 4px;
 }
+/* Replies are converted to HTML by formatMarkdown(), which turns newlines into
+   <br>. pre-wrap on top of that would also render the source indentation of any
+   markup written in this file, so it is deliberately not used here. */
+.bubble strong { font-weight: 650; color: #fff; }
+.bubble ul { margin: .4rem 0 .4rem 1.1rem; }
+.bubble li { margin: .15rem 0; }
+.bubble .src-block {
+  display: block; margin-top: .7rem; padding-top: .6rem;
+  border-top: 1px solid var(--border); font-size: .76rem; color: var(--muted);
+}
+.bubble .src-block .src-n { color: var(--accent2); font-weight: 600; }
 
 /* Agent badge */
 .agent-badge {
@@ -419,11 +488,15 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
 
     <!-- Active User -->
     <div class="sidebar-section">
-      <div class="section-label">Active User</div>
-      <div class="user-card">
-        <div class="user-name" id="user-name">Loading…</div>
-        <div class="user-dept" id="user-dept"></div>
+      <div class="section-label">Acting as</div>
+      <div class="user-list" id="user-list">
+        <div style="color:var(--muted);font-size:.75rem">Loading…</div>
       </div>
+      <p class="backend-note">
+        Demo persona switch — there is no login or authorisation anywhere in this
+        project. Switching starts a fresh conversation so half-finished requests
+        are never filed against the wrong employee.
+      </p>
     </div>
 
     <!-- Orchestration Backend -->
@@ -487,11 +560,12 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
 
     <!-- Header -->
     <div id="chat-header">
-      <div>
-        <div class="chat-title">HR Conversation</div>
-        <div class="chat-sub" id="agent-status">Ask me anything about HR policies, leave, or your requests</div>
+      <button id="sidebar-toggle" onclick="toggleSidebar()" title="Menu" aria-label="Menu">☰</button>
+      <div style="flex:1;min-width:0">
+        <div class="chat-title" id="panel-title">HR Conversation</div>
+        <div class="chat-sub" id="agent-status">Ask about policies, leave, or your requests</div>
       </div>
-      <div class="session-badge" id="session-badge">session: –</div>
+      <div class="session-badge" id="session-badge">new session</div>
     </div>
 
     <!-- Tabs -->
@@ -515,21 +589,7 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
       </div>
 
       <!-- Messages -->
-      <div id="messages">
-        <div class="msg assistant">
-          <div class="avatar agent-av">🤖</div>
-          <div class="bubble-wrap">
-            <div class="bubble">
-              👋 Hello! I'm your ACME HR Assistant powered by a multi-agent system.
-              I can help you with leave requests, leave balances, company policies, and general HR matters.
-              How can I help you today?
-            </div>
-            <div style="display:flex;gap:.5rem;align-items:center">
-              <span class="agent-badge badge-gray"><span class="dot"></span>General Assistant</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <div id="messages"></div>
 
       <!-- Typing indicator -->
       <div id="typing">
@@ -542,7 +602,7 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
 
       <!-- Input -->
       <div id="input-area">
-        <textarea id="msg-input" rows="1" placeholder="Ask anything about HR, policies, or your leave…"></textarea>
+        <textarea id="msg-input" rows="1" placeholder="Ask about policies, leave, or HR…"></textarea>
         <button id="send-btn" onclick="sendMessage()" title="Send">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -705,7 +765,9 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
 // ── State ──────────────────────────────────────────────────────
 let sessionId = localStorage.getItem('hrSessionId') || null;
 let currentBackend = 'native';
+let activeUserId = null;
 let lastAgent = null;
+let lastAgentStatus = null;
 
 // Agent colour mapping
 const AGENT_COLOURS = {
@@ -726,7 +788,9 @@ const AGENT_ICONS = {
 
 // ── Init ───────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  renderEmptyState();
   loadStatus();
+  loadUsers();
   loadBalance();
   setupInputResize();
   setupDropzone();
@@ -739,6 +803,22 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+function toggleSidebar(force) {
+  const sb = document.getElementById('sidebar');
+  const open = force !== undefined ? force : !sb.classList.contains('open');
+  sb.classList.toggle('open', open);
+
+  let scrim = document.getElementById('scrim');
+  if (open && !scrim) {
+    scrim = document.createElement('div');
+    scrim.id = 'scrim';
+    scrim.onclick = () => toggleSidebar(false);
+    document.body.appendChild(scrim);
+  } else if (!open && scrim) {
+    scrim.remove();
+  }
+}
+
 // ── API helpers ─────────────────────────────────────────────────
 async function apiFetch(url, opts = {}) {
   const res = await fetch(url, opts);
@@ -750,15 +830,91 @@ async function apiFetch(url, opts = {}) {
 async function loadStatus() {
   try {
     const data = await apiFetch('/api/status');
-    const user = data.active_user || {};
-    document.getElementById('user-name').textContent = user.name || 'Unknown';
-    document.getElementById('user-dept').textContent = `${user.department || ''} · ${user.email || ''}`;
     document.getElementById('status-text').textContent = `${data.backend} · ${data.model}`;
     currentBackend = data.backend;
     highlightBackend(currentBackend);
   } catch (e) {
-    document.getElementById('status-text').textContent = 'Offline – start Flask server';
+    document.getElementById('status-text').textContent = 'Offline – start the Flask server';
   }
+}
+
+// ── User switching ──────────────────────────────────────────────
+function initials(name) {
+  return (name || '?').split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase();
+}
+
+async function loadUsers() {
+  const el = document.getElementById('user-list');
+  try {
+    const users = await apiFetch('/api/users');
+    activeUserId = (users.find(u => u.active) || {}).id ?? null;
+    el.innerHTML = users.map(u => `
+      <button class="user-card ${u.active ? 'active' : ''}" onclick="switchUser(${u.id})">
+        <span class="user-av">${escHtml(initials(u.name))}</span>
+        <span class="user-meta">
+          <span class="user-name">${escHtml(u.name)}</span>
+          <span class="user-dept">${escHtml(u.department || '')}</span>
+        </span>
+        <span class="user-bal">${u.remaining_leaves ?? '–'}d</span>
+      </button>`).join('');
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--red);font-size:.75rem">Could not load users.</div>';
+  }
+}
+
+async function switchUser(id) {
+  if (id === activeUserId) return;
+  document.querySelectorAll('.user-card').forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/api/user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    // A half-filled leave request belongs to the employee who started it, so a
+    // persona switch begins a new conversation rather than inheriting theirs.
+    clearChat(`Now acting as ${data.active_user.name}. Previous conversation cleared.`);
+    await Promise.all([loadUsers(), loadStatus(), loadBalance()]);
+    if (document.getElementById('panel-data').classList.contains('active')) loadData();
+  } catch (e) {
+    alert(`Could not switch user: ${e.message}`);
+  } finally {
+    document.querySelectorAll('.user-card').forEach(b => b.disabled = false);
+  }
+}
+
+// ── Empty state ─────────────────────────────────────────────────
+const CAPABILITIES = [
+  ['📖', 'Company policy',  'Answered from the knowledge base, with sources', "What is our work from home policy?"],
+  ['📊', 'Leave balance',   'Read live from the database',                    "How many leave days do I have left?"],
+  ['📅', 'Request leave',   'Multi-turn, validated against your balance',     "I want to take leave next Monday"],
+  ['📨', 'HR ticket',       'Logged and given a reference',                   "Raise a ticket for my salary slip"],
+];
+
+function renderEmptyState(note) {
+  const msgs = document.getElementById('messages');
+  msgs.innerHTML = `
+    <div class="empty-hero">
+      <div class="eh-icon">🤖</div>
+      <h2>ACME HR Assistant</h2>
+      <p>${note ? escHtml(note) + '<br>' : ''}Ask a question and the orchestrator routes it to the
+         specialist agent that handles it. Try one of these:</p>
+      <div class="cap-grid">
+        ${CAPABILITIES.map(([icon, title, desc, prompt]) => `
+          <div class="cap" onclick="sendPrompt(${JSON.stringify(prompt).replace(/"/g, '&quot;')})">
+            <div class="cap-t">${icon} ${escHtml(title)}</div>
+            <div class="cap-d">${escHtml(desc)}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+}
+
+function clearEmptyState() {
+  const hero = document.querySelector('.empty-hero');
+  if (hero) hero.remove();
 }
 
 function highlightBackend(backend) {
@@ -776,6 +932,7 @@ async function sendMessage() {
   input.value = '';
   input.style.height = 'auto';
 
+  clearEmptyState();
   appendUserMessage(text);
   showTyping(true);
 
@@ -810,7 +967,11 @@ async function sendMessage() {
 }
 
 function sendQuick(el) {
-  document.getElementById('msg-input').value = el.textContent;
+  sendPrompt(el.textContent);
+}
+
+function sendPrompt(text) {
+  document.getElementById('msg-input').value = text;
   sendMessage();
 }
 
@@ -895,8 +1056,8 @@ function showTyping(show) {
 }
 
 function updateAgentStatus(result) {
-  document.getElementById('agent-status').textContent =
-    `Last routed to: ${result.agent || result.agent_class} · backend: ${result.backend}`;
+  lastAgentStatus = `Routed to ${result.agent || result.agent_class} · ${result.backend}`;
+  document.getElementById('agent-status').textContent = lastAgentStatus;
 }
 
 // ── Observability ────────────────────────────────────────────────
@@ -1033,6 +1194,7 @@ function kbFilePicked() {
   const f = document.getElementById('kb-file').files[0];
   document.getElementById('kb-file-label').textContent =
     f ? `${f.name} — ${(f.size / 1024).toFixed(1)} KB` : 'Drop a policy document here, or click to browse';
+  document.getElementById('kb-dropzone').classList.toggle('ready', !!f);
 }
 
 async function loadKnowledge() {
@@ -1274,27 +1436,38 @@ async function generateReport() {
 }
 
 // ── UI helpers ───────────────────────────────────────────────────
+const PANEL_TITLES = {
+  chat:      ['HR Conversation',  'Ask about policies, leave, or your requests'],
+  data:      ['Stored Data',      'What the agents actually wrote to SQLite'],
+  graph:     ['Orchestration Graph', 'The compiled LangGraph and the path each turn took'],
+  evals:     ['Routing Evaluation',  'How well the orchestrator picked the right agent'],
+  knowledge: ['Knowledge Base',   'Documents the policy agent retrieves from'],
+};
+
 function switchTab(tab) {
   document.querySelectorAll('.tab, .tab-panel').forEach(el => el.classList.remove('active'));
-  document.querySelector(`.tab[onclick*="${tab}"]`).classList.add('active');
+  document.querySelector(`.tab[onclick*="'${tab}'"]`).classList.add('active');
   document.getElementById(`panel-${tab}`).classList.add('active');
+
+  const [title, sub] = PANEL_TITLES[tab] || PANEL_TITLES.chat;
+  document.getElementById('panel-title').textContent = title;
+  // Returning to Chat restores the routing line if a turn has happened,
+  // otherwise the default prompt — never the previous tab's subtitle.
+  document.getElementById('agent-status').textContent =
+    tab === 'chat' ? (lastAgentStatus || PANEL_TITLES.chat[1]) : sub;
+  toggleSidebar(false);
 }
 
-function clearChat() {
+function clearChat(note) {
   sessionId = null;
   lastAgent = null;
   localStorage.removeItem('hrSessionId');
-  const msgs = document.getElementById('messages');
-  msgs.innerHTML = `
-    <div class="msg assistant">
-      <div class="avatar agent-av">🤖</div>
-      <div class="bubble-wrap">
-        <div class="bubble">👋 New session started! How can I help you today?</div>
-        <div><span class="agent-badge badge-gray"><span class="dot"></span>General Assistant</span></div>
-      </div>
-    </div>`;
-  document.getElementById('session-badge').textContent = 'session: new';
-  document.getElementById('obs-list').innerHTML = '<div style="color:var(--muted);font-size:.75rem">No interactions yet</div>';
+  renderEmptyState(note);
+  lastAgentStatus = null;
+  document.getElementById('session-badge').textContent = 'new session';
+  document.getElementById('agent-status').textContent = PANEL_TITLES.chat[1];
+  document.getElementById('obs-list').innerHTML =
+    '<div style="color:var(--muted);font-size:.75rem">No interactions yet</div>';
 }
 
 function scrollBottom() {
@@ -1317,11 +1490,20 @@ function escHtml(str) {
 }
 
 function formatMarkdown(text) {
-  // Minimal markdown: bold, newlines, code
-  return escHtml(text)
+  // Minimal markdown: bold, italics, inline code, newlines. Escaping happens
+  // first, so nothing a model or a policy document emits can inject markup.
+  const render = (s) => escHtml(s)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`(.+?)`/g, '<code style="background:rgba(255,255,255,.08);padding:.1em .3em;border-radius:4px">$1</code>')
+    .replace(/(^|\s)\*(?!\s)(.+?)\*(?=\s|$|[.,)])/g, '$1<em>$2</em>')
+    .replace(/`(.+?)`/g, '<code style="background:rgba(255,255,255,.08);padding:.1em .35em;border-radius:4px">$1</code>')
     .replace(/\n/g, '<br>');
+
+  // The RAG agent appends a "📚 **Sources**" block. Split it out so citations
+  // read as metadata rather than as part of the answer.
+  const parts = String(text).split(/\n\s*📚 \*\*Sources\*\*\s*\n?/);
+  if (parts.length < 2) return render(text);
+  return render(parts[0].trim()) +
+    `<span class="src-block"><span class="src-n">📚 Sources</span><br>${render(parts[1].trim())}</span>`;
 }
 </script>
 </body>

@@ -94,17 +94,20 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
     """Application factory – accepts pre-initialised shared objects."""
 
     app = Flask(__name__, static_folder="frontend")
-    user_id = config["active_user_id"]
 
-    # The active orchestrator is held in a one-slot dict rather than the closure
-    # variable so /api/backend can swap it without rebuilding the app.
+    # Backend and active user are held in a one-slot dict rather than closure
+    # variables so /api/backend and /api/user can swap them without rebuilding
+    # the app. There is no authentication here — see the README; this is a demo
+    # persona switch, not a login.
     active = {
         "backend": config["orchestrator_backend"],
         "orchestrator": orchestrator,
+        "user_id": config["active_user_id"],
     }
 
     def _run_turn(session_id: str, user_input: str) -> dict:
         """Shared pipeline: detect intent, invoke agent, persist, log."""
+        user_id = active["user_id"]
         ctx = session_manager.get_or_create(session_id, user_id)
         result = active["orchestrator"].process(user_input, ctx)
 
@@ -129,6 +132,7 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
             agent_response=result["reply"],
             backend=result["backend"],
         )
+        result["user_id"] = user_id
         return result
 
     # ── Routes ────────────────────────────────────────────────────────────────
@@ -151,7 +155,8 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
 
     @app.route("/api/status")
     def status():
-        user = db.get_user(user_id) or {"name": "Unknown", "department": "–", "email": "–"}
+        user = db.get_user(active["user_id"]) or \
+            {"name": "Unknown", "department": "–", "email": "–"}
         return jsonify({
             "backend":     active["backend"],
             "model":       config["llm"]["model"],
@@ -160,6 +165,48 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
             "db_path":     config["database"]["path"],
             "backends":    ["native", "langgraph", "crewai", "adk"],
         })
+
+    @app.route("/api/users")
+    def list_users():
+        """Every seeded employee, with their leave balance, for the switcher."""
+        users = db.fetch_all("SELECT * FROM users ORDER BY id")
+        for user in users:
+            balance = db.get_leave_balance(user["id"]) or {}
+            user["remaining_leaves"] = balance.get("remaining_leaves")
+            user["total_leaves"] = balance.get("total_leaves")
+            user["active"] = user["id"] == active["user_id"]
+        return jsonify(users)
+
+    @app.route("/api/user", methods=["POST"])
+    def switch_user():
+        """
+        Change which employee the assistant is acting for.
+
+        This is a demo persona switch, not authentication — there is no login
+        and no authorisation anywhere in this project.
+
+        The caller is told to start a new conversation, because slot-filling
+        state is keyed by session rather than by user: continuing a half-filled
+        leave request after switching would file it against the new employee.
+        """
+        data = request.get_json(silent=True) or {}
+        try:
+            new_id = int(data.get("user_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "user_id must be an integer"}), 400
+
+        user = db.get_user(new_id)
+        if not user:
+            return jsonify({"error": f"No user with id {new_id}"}), 404
+
+        previous = active["user_id"]
+        active["user_id"] = new_id
+        if previous != new_id:
+            logger.log_event("active_user_changed",
+                             previous_user_id=previous, user_id=new_id,
+                             name=user.get("name"))
+        return jsonify({"active_user": user, "changed": previous != new_id,
+                        "reset_session": True})
 
     @app.route("/api/backend", methods=["POST"])
     def switch_backend():
@@ -330,26 +377,26 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
 
     @app.route("/api/history")
     def history():
-        rows = db.get_all_messages(user_id)
+        rows = db.get_all_messages(active["user_id"])
         return jsonify(rows)
 
     @app.route("/api/preview/leave-balance")
     def leave_balance():
-        data = db.get_leave_balance(user_id)
+        data = db.get_leave_balance(active["user_id"])
         return jsonify(data or {})
 
     @app.route("/api/preview/leave-requests")
     def leave_requests():
-        return jsonify(db.get_leave_requests(user_id))
+        return jsonify(db.get_leave_requests(active["user_id"]))
 
     @app.route("/api/preview/hr-requests")
     def hr_requests():
-        return jsonify(db.get_hr_requests(user_id))
+        return jsonify(db.get_hr_requests(active["user_id"]))
 
     @app.route("/api/report")
     def generate_report():
         from preview.html_report import HTMLReportGenerator
-        gen = HTMLReportGenerator(db, user_id)
+        gen = HTMLReportGenerator(db, active["user_id"])
         path = gen.generate(open_browser=False)
         return jsonify({"path": path, "url": f"/report-file"})
 

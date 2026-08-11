@@ -308,6 +308,62 @@ def test_happy_path_submits_and_deducts() -> None:
     assert ctx.active_agent is None, "agent did not release the session"
 
 
+# ── Escape hatch ─────────────────────────────────────────────────────────────
+
+def test_user_can_always_leave_the_flow() -> None:
+    """
+    While this agent holds the session the orchestrator skips routing, so a
+    user with no way out is stuck talking to it about nothing else. Cancelling
+    must work at every stage, not only while a confirmation is pending.
+    """
+    stages = {
+        "collecting slots":       {},
+        "after partial slots":    {"start_date": "2026-06-01"},
+        "awaiting confirmation":  {"start_date": "2026-06-01", "end_date": "2026-06-02",
+                                   "reason": "x", "awaiting_confirmation": True},
+    }
+    for stage, state in stages.items():
+        for word in ("cancel", "never mind", "stop", "forget it"):
+            fx = Fixture()
+            ctx = fx.ctx(**state)
+            reply = fx.agent.handle(word, ctx)
+            assert ctx.active_agent is None, f"{stage!r} + {word!r} left the agent holding the session"
+            assert ctx.agent_state == {}, f"{stage!r} + {word!r} left stale state: {ctx.agent_state}"
+            assert "cancel" in reply.lower(), reply
+
+
+def test_rejection_does_not_trap_the_user() -> None:
+    """
+    A rejected request keeps the agent active so the user can retry dates —
+    but they must still be able to walk away, which they could not before.
+    """
+    fx = Fixture()
+    ctx = fx.ctx(start_date="2026-06-01", end_date="2026-07-01", reason="vacation")
+
+    rejection = fx.agent.handle("submit it", ctx)
+    assert "❌" in rejection, rejection
+    assert ctx.active_agent == "LeaveRequestAgent", "agent should hold on for a retry"
+
+    reply = fx.agent.handle("actually, cancel that", ctx)
+    assert ctx.active_agent is None, "user could not escape after a rejection"
+    assert fx.requests() == [], "nothing should have been stored"
+
+
+def test_hr_agent_can_also_be_cancelled() -> None:
+    from agents.hr_request_agent import HRRequestAgent
+
+    fx = Fixture()
+    agent = HRRequestAgent(StubLLM(), fx.db, fx.logger)
+    ctx = fx.ctx(request_description="a salary slip")
+    ctx.active_agent = "HRRequestAgent"
+
+    reply = agent.handle("never mind", ctx)
+    assert ctx.active_agent is None, ctx.active_agent
+    assert ctx.agent_state == {}, ctx.agent_state
+    assert "cancel" in reply.lower(), reply
+    assert fx.db.get_hr_requests(TEST_USER_ID) == [], "cancelled request was stored"
+
+
 # ── Robustness ───────────────────────────────────────────────────────────────
 
 def test_corrupt_session_state_is_survivable() -> None:
@@ -343,6 +399,9 @@ def main() -> None:
     check("rejects empty HR request text",           test_rejects_empty_hr_request)
     check("submit is atomic",                        test_submit_is_atomic)
     check("happy path submits and deducts",          test_happy_path_submits_and_deducts)
+    check("user can always leave the flow",          test_user_can_always_leave_the_flow)
+    check("rejection does not trap the user",        test_rejection_does_not_trap_the_user)
+    check("HR agent can also be cancelled",          test_hr_agent_can_also_be_cancelled)
     check("corrupt session state is survivable",     test_corrupt_session_state_is_survivable)
 
     failures = [label for label, err in _results if err is not None]

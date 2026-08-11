@@ -1,0 +1,30 @@
+# Never ship secrets — the app reads .env at runtime via env_file/compose.
+.env
+
+# Local virtualenvs and caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git metadata is not needed inside the image
+.git/
+.gitignore
+
+# Runtime artefacts — these are bind-mounted, not baked in
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/report.html
+data/langgraph_flow.png
+logs/*.log
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

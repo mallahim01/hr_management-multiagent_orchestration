@@ -173,11 +173,15 @@ def main() -> None:
         from app import create_app
         app = create_app(config, db, llm, orchestrator, session_manager, logger)
         server_cfg = config.get("server", {})
-        app.run(
-            host=server_cfg.get("host", "127.0.0.1"),
-            port=server_cfg.get("port", 5000),
-            debug=server_cfg.get("debug", False),
-        )
+        # SERVER_HOST/PORT override config.yaml so a container can bind 0.0.0.0
+        # without the local default becoming 0.0.0.0 too — binding every
+        # interface should be an explicit choice, not the default for a laptop.
+        host = os.getenv("SERVER_HOST", server_cfg.get("host", "127.0.0.1"))
+        port = int(os.getenv("SERVER_PORT", server_cfg.get("port", 5000)))
+        debug = os.getenv("SERVER_DEBUG", str(server_cfg.get("debug", False))).lower() \
+            in ("1", "true", "yes", "on")
+        print(f"[main] Serving on http://{host}:{port} (debug={debug})")
+        app.run(host=host, port=port, debug=debug)
     elif args.demo:
         run_demo(session_id)
     elif args.preview_cli:

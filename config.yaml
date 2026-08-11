@@ -40,6 +40,8 @@ knowledge:
   top_k: 5                            # extracts passed to the LLM
   candidate_k: 20                     # per-arm candidates fetched before fusion
   rrf_k: 60                           # Reciprocal Rank Fusion smoothing constant
+  connect_timeout: 5                  # seconds; fail fast so a down Milvus
+                                      # degrades visibly instead of hanging
 
 # Web server settings (used by app.py)
 server:

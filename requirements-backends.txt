@@ -1,0 +1,16 @@
+# Optional orchestration backends.
+#
+# These are real integrations, not stubs, but they pull in roughly 2 GB of
+# transitive dependencies between them — which is why they are not in the
+# default install. The native and langgraph backends need nothing from here.
+#
+#     pip install -r requirements.txt -r requirements-backends.txt
+
+# CrewAI (real Agent/Task/Crew orchestration).
+# The litellm extra is required for any provider CrewAI does not resolve
+# natively — including Groq, which is this project's default.
+crewai[litellm]>=0.28.0
+
+# Google ADK (real Agent + tool-dispatch orchestration).
+# Also needs GOOGLE_API_KEY and a current Gemini model (see ADK_MODEL).
+google-adk>=1.0.0

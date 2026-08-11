@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from core.intent_detector import INTENT_TO_AGENT
 from core.llm_wrapper import LLMWrapper
-from core.logger import InteractionLogger
+from core.logger import DEFAULT_LOG_PATH, InteractionLogger
 
 # Intents that mean "no routing decision was taken this turn".
 CONTINUATION_INTENTS = {"continuation"}
@@ -67,7 +67,7 @@ class RoutingJudge:
     def __init__(
         self,
         llm: LLMWrapper,
-        log_path: str = "data/interactions.log",
+        log_path: str = DEFAULT_LOG_PATH,
         batch_size: int = 5,
     ) -> None:
         self.llm = llm

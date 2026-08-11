@@ -1,0 +1,119 @@
+# Full stack: Milvus (with its etcd and MinIO dependencies) plus the app.
+#
+#   cp .env.example .env      # add GROQ_API_KEY and GOOGLE_API_KEY
+#   docker compose up --build
+#   open http://localhost:5000
+#
+# On first start the app waits for Milvus, ingests data/company_policy.txt, and
+# then serves. Ingestion is skipped on later starts because the volumes persist.
+#
+# If you already run Milvus on 19530, set MILVUS_HOST_PORT to something else in
+# .env — the app talks to Milvus over the compose network either way.
+
+# Docker Desktop groups everything under this project name — one entry with the
+# four containers nested inside it.
+name: hr-agent-orchestration
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: hr-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - etcd_data:/etcd
+    command: >
+      etcd -advertise-client-urls=http://etcd:2379
+           -listen-client-urls=http://0.0.0.0:2379
+           --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks: [hrnet]
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: hr-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks: [hrnet]
+
+  milvus:
+    image: milvusdb/milvus:v2.6.4
+    container_name: hr-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      MINIO_REGION: us-east-1
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      # Host port is configurable so this can coexist with an existing Milvus.
+      - "${MILVUS_HOST_PORT:-19530}:19530"
+      - "${MILVUS_METRICS_PORT:-9091}:9091"
+    depends_on:
+      etcd: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    networks: [hrnet]
+
+  app:
+    build:
+      context: .
+      args:
+        # Set to "true" to also install the crewai and adk backends (~2 GB more).
+        INSTALL_ALL_BACKENDS: "${INSTALL_ALL_BACKENDS:-false}"
+    container_name: hr-app
+    env_file: [.env]
+    environment:
+      # Inside the compose network Milvus is reachable by service name. This
+      # overrides the localhost URI in config.yaml.
+      KNOWLEDGE__MILVUS_URI: http://milvus:19530
+      MILVUS_HEALTH_URL: http://milvus:9091/healthz
+      # config.yaml binds 127.0.0.1, which inside a container means "unreachable
+      # from the host". Containers must bind every interface.
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "5000"
+      SERVER_DEBUG: "false"
+    ports:
+      - "${APP_HOST_PORT:-5000}:5000"
+    volumes:
+      # The SQLite database and the interaction log stay on the host so they
+      # survive a rebuild and can be inspected without entering the container.
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      milvus: {condition: service_healthy}
+    restart: unless-stopped
+    networks: [hrnet]
+
+volumes:
+  etcd_data:
+  minio_data:
+  milvus_data:
+
+networks:
+  hrnet:
+    driver: bridge

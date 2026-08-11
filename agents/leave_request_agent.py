@@ -50,6 +50,14 @@ class LeaveRequestAgent(BaseAgent):
     def handle(self, user_input: str, ctx: SessionContext) -> str:
         state = ctx.agent_state  # persistent between turns
 
+        # ── Step 0: Always allow the user out ──────────────────────────────
+        # While this agent holds the session the orchestrator skips intent
+        # detection entirely, so without an unconditional escape a user whose
+        # request was rejected has no way to reach another agent — every
+        # message, on any subject, comes back here asking for a start date.
+        if self._is_cancellation(user_input):
+            return self._release(ctx, "leave request")
+
         # ── Step 1: If awaiting_confirmation, handle yes/no ───────────────
         if state.get("awaiting_confirmation"):
             return self._handle_confirmation(user_input, ctx, state)
@@ -97,17 +105,30 @@ class LeaveRequestAgent(BaseAgent):
             f"Shall I go ahead and submit this request? (yes / no)"
         )
 
+    CANCEL_WORDS = {"no", "n", "cancel", "nope", "nah", "nevermind", "stop",
+                    "abort", "quit", "exit", "forget"}
+    CANCEL_PHRASES = ("cancel", "changed my mind", "never mind", "nevermind",
+                      "forget it", "start over", "not now")
+
+    @classmethod
+    def _is_cancellation(cls, user_input: str) -> bool:
+        """True when the user is trying to abandon the leave flow."""
+        lowered = user_input.lower()
+        return bool(set(lowered.split()) & cls.CANCEL_WORDS) or \
+            any(phrase in lowered for phrase in cls.CANCEL_PHRASES)
+
+    @staticmethod
+    def _release(ctx: SessionContext, what: str) -> str:
+        """Hand the session back to the orchestrator for fresh routing."""
+        ctx.active_agent = None
+        ctx.agent_state = {}
+        return (f"No problem! Your {what} has been cancelled. "
+                f"Let me know if you need anything else. 😊")
+
     def _handle_confirmation(self, user_input: str, ctx: SessionContext, state: Dict) -> str:
         """Process user's yes/no confirmation."""
         words = set(user_input.lower().split())
-        cancel_words = {"no", "n", "cancel", "nope", "nah", "nevermind", "stop", "abort"}
         yes_words = {"yes", "y", "confirm", "sure", "ok", "yep", "yeah", "submit", "go"}
-
-        # Check for cancellation first (takes priority)
-        if words & cancel_words or "cancel" in user_input.lower() or "changed my mind" in user_input.lower():
-            ctx.active_agent = None
-            ctx.agent_state = {}
-            return "No problem! Your leave request has been cancelled. Let me know if you need anything else. 😊"
 
         if words & yes_words:
             # Re-validate: the balance may have moved since the summary turn.
@@ -147,11 +168,9 @@ class LeaveRequestAgent(BaseAgent):
                 f"📝 Reason: {state['reason']}\n"
                 f"Status: **Pending** – HR will review and confirm."
             )
-        else:
-            # User cancelled
-            ctx.active_agent = None
-            ctx.agent_state = {}
-            return "No problem! Your leave request has been cancelled. Let me know if you need anything else. 😊"
+        # Anything that is neither a yes nor a cancellation (handled in
+        # handle()) is treated as declining to submit.
+        return self._release(ctx, "leave request")
 
     # ── Validation ────────────────────────────────────────────────────────
 

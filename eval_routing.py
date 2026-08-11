@@ -1,7 +1,7 @@
 """
 eval_routing.py – LLM-as-judge evaluation of the orchestrator's routing.
 
-Replays the most recent turns from data/interactions.log and asks the model,
+Replays the most recent turns from logs/interactions.log and asks the model,
 after the fact, whether each one went to the right agent. Prints a scored table
 and writes a `routing_eval` summary back to the log.
 
@@ -25,7 +25,7 @@ with open("config.yaml", encoding="utf-8") as f:
     config = yaml.safe_load(f)
 
 from core.llm_wrapper import LLMWrapper, available_keys
-from core.logger import InteractionLogger
+from core.logger import DEFAULT_LOG_PATH, InteractionLogger
 from core.routing_judge import RoutingJudge
 
 VERDICT_MARK = {
@@ -40,7 +40,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Judge recent routing decisions")
     parser.add_argument("--limit", type=int, default=10, help="turns to judge (default 10)")
     parser.add_argument("--batch", type=int, default=5, help="turns per judge call (default 5)")
-    parser.add_argument("--log", default="data/interactions.log", help="log file to read")
+    parser.add_argument("--log", default=DEFAULT_LOG_PATH, help="log file to read")
     parser.add_argument("--json", action="store_true", help="print the raw report as JSON")
     args = parser.parse_args()
 

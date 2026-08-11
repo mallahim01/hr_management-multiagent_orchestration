@@ -1,0 +1,112 @@
+{
+  "description": "Hand-labelled cases for the end-to-end evaluation. Every field here is a human judgement written before the system was run against it, so a passing score means the system matched a fixed expectation rather than an expectation written to match the system.",
+  "policy_document": "data/company_policy.txt",
+  "routing": [
+    {
+      "id": "route-01",
+      "query": "What is our work from home policy?",
+      "expected_agent": "CompanyKnowledgeAgent",
+      "note": "asking about a policy, not requesting an action"
+    },
+    {
+      "id": "route-02",
+      "query": "How many leave days do I have left?",
+      "expected_agent": "LeaveBalanceAgent",
+      "note": "personal balance lookup, not a policy question"
+    },
+    {
+      "id": "route-03",
+      "query": "I want to apply for leave next Monday",
+      "expected_agent": "LeaveRequestAgent",
+      "note": "starts the slot-filling flow"
+    },
+    {
+      "id": "route-04",
+      "query": "Please raise a ticket to get my salary slip for March",
+      "expected_agent": "HRRequestAgent",
+      "note": "asking HR to do something, not asking what the rule is"
+    },
+    {
+      "id": "route-05",
+      "query": "Good morning, how are you?",
+      "expected_agent": "GeneralAssistantAgent",
+      "note": "chitchat"
+    },
+    {
+      "id": "route-06",
+      "query": "What is the reimbursement policy for travel?",
+      "expected_agent": "CompanyKnowledgeAgent",
+      "note": "the policy/action boundary — asking ABOUT reimbursement rules"
+    },
+    {
+      "id": "route-07",
+      "query": "I need to claim my travel expenses from last week",
+      "expected_agent": "HRRequestAgent",
+      "note": "the same topic as route-06 but requesting an action; these two together test the boundary"
+    },
+    {
+      "id": "route-08",
+      "query": "How many sick days am I entitled to per year?",
+      "expected_agent": "CompanyKnowledgeAgent",
+      "note": "entitlement is a policy fact, not a personal balance — deliberately adjacent to route-02"
+    }
+  ],
+  "retrieval": [
+    {
+      "id": "rag-01",
+      "query": "How many days a week can I work from home?",
+      "expect_section_contains": ["WORK FROM HOME", "2.2"],
+      "expect_answer_contains": ["2"],
+      "note": "semantic match; the clause says 'up to 2 days per week'"
+    },
+    {
+      "id": "rag-02",
+      "query": "LWP",
+      "expect_section_contains": ["Leave Without Pay"],
+      "expect_answer_contains": [],
+      "note": "bare acronym — the case dense-only retrieval typically misses"
+    },
+    {
+      "id": "rag-03",
+      "query": "am I allowed to do my job from my house?",
+      "expect_section_contains": ["WORK FROM HOME"],
+      "expect_answer_contains": [],
+      "note": "paraphrase sharing no content words with the clause — the case BM25-only retrieval misses"
+    },
+    {
+      "id": "rag-04",
+      "query": "what happens if a public holiday falls on a weekend?",
+      "expect_section_contains": ["Public Holidays"],
+      "expect_answer_contains": ["Monday"],
+      "note": "specific factual lookup"
+    },
+    {
+      "id": "rag-05",
+      "query": "how much bereavement leave do I get for a grandparent?",
+      "expect_section_contains": ["Bereavement"],
+      "expect_answer_contains": ["2"],
+      "note": "requires distinguishing extended family (2 days) from immediate family (5 days)"
+    },
+    {
+      "id": "rag-06",
+      "query": "how long is the probation period?",
+      "expect_section_contains": [],
+      "expect_answer_contains": ["6"],
+      "note": "answer is checked but the section is not pinned, since probation is mentioned in more than one place"
+    }
+  ],
+  "refusal": [
+    {
+      "id": "refuse-01",
+      "query": "What is our policy on bringing pet iguanas to the office?",
+      "expect_refusal": true,
+      "note": "absent from the policy document; the agent must decline rather than invent one"
+    },
+    {
+      "id": "refuse-02",
+      "query": "How many days of unlimited crypto-trading leave do employees get?",
+      "expect_refusal": true,
+      "note": "premise is invented; a compliant answer must not confirm it"
+    }
+  ]
+}

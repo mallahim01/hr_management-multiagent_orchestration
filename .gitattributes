@@ -1,0 +1,20 @@
+# Shell scripts must keep LF endings: a CRLF entrypoint fails inside a Linux
+# container with a confusing "no such file or directory" from the shebang line.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+docker-compose.yml text eol=lf
+
+# Keep data and config files consistent across platforms.
+*.py            text
+*.md            text
+*.yml           text
+*.yaml          text
+*.json          text
+*.txt           text
+
+# One record per line, LF, so greps and diffs behave the same everywhere.
+*.log           text eol=lf
+
+# Binary — never touch line endings.
+*.png           binary
+*.db            binary

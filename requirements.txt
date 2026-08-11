@@ -1,4 +1,9 @@
-# Core dependencies
+# Core runtime — everything needed for the native and langgraph backends,
+# the Flask app, and the Milvus knowledge base. This is what the Docker image
+# installs by default.
+
+# LLM client. Used for Groq too: Groq exposes an OpenAI-compatible endpoint,
+# so one SDK serves both providers (see core/llm_wrapper.py).
 openai>=1.0.0
 python-dotenv>=1.0.0
 pyyaml>=6.0
@@ -10,16 +15,14 @@ flask>=3.0.0
 # google-genai supplies the embedding client (chat generation stays on Groq).
 pymilvus>=2.5
 google-genai>=1.0.0
-pypdf>=4.0.0                  # optional: lets HR upload PDF policy documents
+pypdf>=4.0.0                  # lets HR upload PDF policy documents
 
 # LangGraph (real StateGraph orchestration + ASCII/Mermaid graph export)
 langgraph>=0.0.40
 grandalf>=0.8
 
-# CrewAI (real Agent/Task/Crew orchestration)
-# The litellm extra is required for any provider CrewAI does not resolve
-# natively — including Groq, which is this project's default.
-crewai[litellm]>=0.28.0
-
-# Google ADK (real Agent + tool-dispatch orchestration)
-google-adk>=1.0.0
+# The crewai and adk backends need heavy extra dependencies (~2 GB installed).
+# They are kept out of the default install so a clone, and the Docker image,
+# stay small. Install them with:
+#     pip install -r requirements-backends.txt
+# or build the image with --build-arg INSTALL_ALL_BACKENDS=true
