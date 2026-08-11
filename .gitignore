@@ -4,3 +4,11 @@ venv/
 __pycache__/
 *.pyc
 *.sqlite3
+
+# Runtime artefacts regenerated on every run — not source
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/interactions.log
+data/report.html
+data/langgraph_flow.png

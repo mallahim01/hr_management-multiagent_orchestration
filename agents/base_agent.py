@@ -72,10 +72,7 @@ class BaseAgent(ABC):
             system_content += f"\n\n{extra_context}"
 
         messages = [{"role": "system", "content": system_content}]
-        print(f"  [BaseAgent] Building messages for {ctx.session_id}")
-        print(f"  [BaseAgent] History: {ctx.history}")
-        print(f"  [BaseAgent] User input: {user_input}")
-        print(f"  [BaseAgent] System prompt: {system_content}")
+
         # Inject last N conversation turns for continuity
         for msg in ctx.history:
             messages.append({"role": msg["role"], "content": msg["content"]})

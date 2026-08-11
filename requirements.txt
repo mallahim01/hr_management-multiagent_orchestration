@@ -6,13 +6,9 @@ tabulate>=0.9.0
 rich>=13.0.0
 flask>=3.0.0
 
-# LangGraph (real StateGraph orchestration + graph image export)
+# LangGraph (real StateGraph orchestration + ASCII/Mermaid graph export)
 langgraph>=0.0.40
 grandalf>=0.8
-
-# Visualization (graph rendering)
-matplotlib>=3.7.0
-networkx>=3.0
 
 # CrewAI (real Agent/Task/Crew orchestration)
 crewai>=0.28.0
