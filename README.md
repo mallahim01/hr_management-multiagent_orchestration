@@ -6,8 +6,12 @@ by changing one line of config.
 
 Five specialist agents share one `SessionContext`: leave requests (multi-turn
 slot-filling with balance and overlap validation), leave balance, company-policy
-Q&A grounded in a local document, generic HR tickets, and a general fallback.
-State, conversation history, and submitted records live in SQLite.
+Q&A answered by **hybrid RAG over Milvus** with cited sources, generic HR tickets,
+and a general fallback. State, conversation history, and submitted records live
+in SQLite; policy documents live in a Milvus collection that HR can upload to
+from the web UI.
+
+Groq runs the chat models, Google runs the embeddings.
 
 **Four orchestration backends** implement the same `BaseOrchestrator` contract:
 
@@ -51,7 +55,25 @@ cp .env.example .env             # Windows: copy .env.example .env
 To use OpenAI instead, set `OPENAI_API_KEY` in `.env` and `llm.provider: openai`
 in `config.yaml`. See [Configuration](#configuration) for the full list.
 
-### 3. Run
+Set `GOOGLE_API_KEY` too — it powers the embeddings for the knowledge base.
+
+### 3. Start Milvus and load the policy document (optional)
+
+The policy agent uses hybrid RAG over Milvus. Start a standalone instance:
+
+```bash
+# https://milvus.io/docs/install_standalone-docker.md
+docker run -d --name milvus-standalone -p 19530:19530 -p 9091:9091 \
+  milvusdb/milvus:v2.6.4 milvus run standalone
+
+python ingest_knowledge.py          # loads data/company_policy.txt
+```
+
+**This step is optional.** Without Milvus the policy agent falls back to putting
+`data/company_policy.txt` straight into the prompt, and says so in its reply. You
+lose citations and uploaded documents, not the ability to run the project.
+
+### 4. Run
 
 | Mode | Command |
 |------|---------|
@@ -63,22 +85,24 @@ in `config.yaml`. See [Configuration](#configuration) for the full list.
 
 Open **http://127.0.0.1:5000** for the web UI.
 
-### 4. Run the tests
+### 5. Run the tests
 
 ```bash
 python verify.py             # imports, DB seeding, agent registry
 python test_langgraph.py     # LangGraph orchestrator      – offline, no API key
 python test_validation.py    # leave safeguards + DB rules – offline, no API key
 python test_eval.py          # routing-eval scoring logic  – offline, no API key
+python test_rag.py           # chunking, grounding, citations – offline, no API key
 python test_eval.py --live   # …plus a live judge probe against labelled data
+python test_rag.py  --live   # …plus real Milvus + Gemini retrieval checks
 python test_backends.py      # all 4 backends against the live LLM (costs tokens)
 ```
 
-The three `test_*.py` suites above run against a stub LLM and a throwaway
-database, so they are deterministic and need neither a key nor network access.
-`test_backends.py` and `--live` consume tokens.
+The four `test_*.py` suites run against stubs and a throwaway database, so they
+are deterministic and need no key, no network and no Milvus. `test_backends.py`
+and the `--live` passes consume tokens.
 
-### 5. Evaluate the routing
+### 6. Evaluate the routing
 
 ```bash
 python eval_routing.py --limit 20
@@ -144,6 +168,7 @@ trap the conversation, and an `agent_node_failed` event is logged.
 .
 ├── agents/               # 5 specialised sub-agents
 ├── core/                 # LLM wrapper, intent detector, session, logger, routing judge
+├── knowledge/            # chunking, Gemini embeddings, Milvus hybrid store
 ├── docs/                 # Architecture deep-dive
 ├── orchestration/        # 4 backends + abstract base + factory
 ├── database/             # SQLite schema + CRUD helpers
@@ -165,7 +190,7 @@ and session state fit together.
 
 | User says | Intent | Agent |
 |-----------|--------|-------|
-| "What is our WFH policy?" | `company_question` | CompanyKnowledgeAgent |
+| "What is our WFH policy?" | `company_question` | CompanyKnowledgeAgent (hybrid RAG + citations) |
 | "I'm sick, need leave" | `leave_request` | LeaveRequestAgent (slot-fill) |
 | "How many leaves do I have?" | `leave_balance` | LeaveBalanceAgent |
 | "I need help with reimbursement" | `hr_request` | HRRequestAgent |
@@ -237,6 +262,11 @@ leave a request with no matching deduction. See `python test_validation.py`.
 | POST | `/api/backend` | Switch orchestration backend at runtime |
 | GET | `/api/graph` | Compiled StateGraph + last node path (LangGraph only) |
 | GET | `/api/eval` | LLM-as-judge scoring of recent routing |
+| GET | `/api/knowledge/status` | Milvus/embedding availability, document counts |
+| GET | `/api/knowledge/documents` | Documents in the knowledge base |
+| POST | `/api/knowledge/ingest` | Upload a document (file or pasted text) |
+| DELETE | `/api/knowledge/documents/<id>` | Remove a document |
+| GET | `/api/knowledge/search` | Preview hybrid retrieval for a query |
 | GET | `/api/history` | Conversation log |
 | GET | `/api/preview/leave-balance` | Balance JSON |
 | GET | `/api/preview/leave-requests` | Leave requests JSON |
@@ -266,6 +296,68 @@ fallback path — which is now reported in the result's `reasoning` and logged a
 
 All four share the same `BaseOrchestrator` contract and the same agents — only the
 routing machinery differs. See [docs/architecture.md](docs/architecture.md).
+
+---
+
+## Knowledge base — hybrid RAG
+
+`CompanyKnowledgeAgent` answers policy questions from a Milvus collection rather
+than from a prompt containing the whole policy file. Each chunk is indexed twice
+in the same collection:
+
+| Arm | How | Good at |
+|---|---|---|
+| **Dense** | Gemini `gemini-embedding-001`, HNSW + COSINE | meaning — *"can I do my job from my house?"* finds the WFH clause despite sharing no words with it |
+| **Sparse** | Milvus's built-in BM25 function over the same text | exact terms — *"LWP"*, a form number, a policy code, which dense vectors handle poorly |
+
+Both arms retrieve `candidate_k` results and the two **rankings** are fused with
+Reciprocal Rank Fusion. Fusing rankings rather than scores matters here: BM25 is
+unbounded and cosine sits in [-1, 1], so a weighted sum of raw scores would need
+per-corpus tuning to mean anything.
+
+Retrieval quality is mostly decided by chunking, so headings are detected and
+carried onto every chunk — both as metadata and prefixed onto the embedded text.
+A chunk reading *"5 days for immediate family"* is far less findable than
+`SECTION 1 – LEAVE POLICY › 1.5 Bereavement Leave: 5 days for immediate family`.
+
+### Schema
+
+`pk`, `text`, `sparse_vector` (BM25 output), `dense_vector`, plus the metadata
+that makes an answer auditable: `doc_id`, `source`, `title`, `section`,
+`chunk_index`, `total_chunks`, `uploaded_at`, `uploaded_by`. Every answer cites
+the extracts it used, and every citation resolves back to a document and chunk.
+
+### HR document upload
+
+The **Knowledge** tab lets HR drop in a `.txt`, `.md`, `.csv`, `.json` or `.pdf`
+file (or paste text), see what is stored, preview exactly what a query retrieves,
+and remove a document. Re-uploading the same filename **replaces** the previous
+copy rather than adding a second one — otherwise a corrected policy would sit in
+the index next to the version it was meant to supersede, and the agent would
+happily cite either.
+
+From the CLI:
+
+```bash
+python ingest_knowledge.py                       # seed the bundled policy
+python ingest_knowledge.py handbook.md           # add a document
+python ingest_knowledge.py --search "LWP"        # preview hybrid retrieval
+python ingest_knowledge.py --list                # what is stored
+python ingest_knowledge.py --delete doc-abc123   # remove a document
+```
+
+### Grounding rules
+
+- Retrieved extracts are numbered and the model is told to cite them inline.
+- **If nothing is retrieved the agent does not call the LLM at all** — it returns
+  the "no information" response and logs `knowledge_no_results`. Answering with an
+  empty context is how a RAG system starts inventing policy.
+- If Milvus or the embedding key is unavailable, the agent falls back to the
+  bundled policy file and **says so in the reply**. The failure is logged as
+  `knowledge_retrieval_failed`; it is never a silent downgrade.
+
+All four backends resolve this agent through `AGENT_REGISTRY`, so native,
+LangGraph, CrewAI and ADK all use RAG without knowing Milvus exists.
 
 ---
 
@@ -324,10 +416,13 @@ code. Routing through a dedicated classifier was chosen because:
   confidence, and a one-sentence rationale, all of which are logged. When the
   assistant answers oddly you can see whether it was misrouted or the agent
   itself was wrong — with one big prompt those two failures look identical.
-- **Each agent gets a small prompt.** `CompanyKnowledgeAgent` is grounded in the
-  policy document and nothing else; `LeaveBalanceAgent` sees only the balance
-  row. Smaller prompts mean fewer tokens and less room to hallucinate across
-  domains.
+- **Each agent gets a small prompt.** `CompanyKnowledgeAgent` sees only the
+  handful of policy extracts retrieved for the question; `LeaveBalanceAgent` sees
+  only the balance row. Smaller prompts mean fewer tokens and less room to
+  hallucinate across domains.
+- **Routing is what decides whether RAG runs at all.** Retrieval only fires on
+  `company_question`, so leave arithmetic and ticket creation never pay for an
+  embedding call, and a policy answer is never grounded in a leave balance.
 - **Routing is cheap and swappable.** Classification is one short JSON-mode call.
   It could be replaced with keyword rules or a fine-tuned classifier without
   touching a single agent.
@@ -352,6 +447,8 @@ any difference between them is framework overhead, not behaviour.
 | `native`, `langgraph` routing and state | Automated, offline, deterministic (`test_langgraph.py`) |
 | Leave safeguards, DB validation, atomicity | Automated, offline (`test_validation.py`) |
 | Routing quality | Scored by an LLM judge (`eval_routing.py`); the judge itself is checked against labelled data by `test_eval.py --live` |
+| RAG grounding and degradation | Automated, offline (`test_rag.py`) — citations, refusal on empty retrieval, fallback when Milvus is down |
+| Hybrid retrieval against real Milvus | `test_rag.py --live` checks exact-term and paraphrase recall; **no labelled recall@k benchmark** |
 | `crewai` backend | Run manually against live Groq; no automated coverage |
 | `adk` backend | Run manually against live Gemini; no automated coverage |
 | Agent answer quality | **Not evaluated.** The judge scores *which agent* handled a turn, not whether the answer was correct or well-grounded |
@@ -365,9 +462,17 @@ any difference between them is framework overhead, not behaviour.
   approve them; there is no HR-side view. The balance is deducted at submission
   rather than on approval, which is the wrong policy for a real system but keeps
   the demo's numbers legible.
-- **Policy retrieval is whole-document.** `CompanyKnowledgeAgent` loads
-  `data/company_policy.txt` into the prompt rather than chunking and embedding it.
-  Fine at ~6 KB; it will not scale to a real policy corpus.
+- **Retrieval quality is unmeasured.** Hybrid search demonstrably finds the right
+  clause on the queries tried, but there is no labelled retrieval set and so no
+  recall@k or MRR figure. The routing evaluation does not cover it.
+- **No reranker.** RRF fuses two rankings; a cross-encoder over the fused
+  candidates would do better, at the cost of another model call per query.
+- **Chunking is heading-driven and tuned to this document.** A policy file with
+  no headings falls back to paragraph packing, which is workable but blunter.
+- **Uploads are unauthenticated.** Anyone who can reach the app can add or delete
+  policy documents that the assistant will then cite as authoritative. In a real
+  deployment this endpoint needs to sit behind an HR role.
+- **Scanned PDFs are not handled** — text extraction only, no OCR.
 - **No concurrency story.** SQLite in WAL mode tolerates concurrent reads, and the
   balance deduction is guarded against going negative, but there is no locking
   around the read-validate-write sequence across separate HTTP requests.
@@ -384,10 +489,14 @@ any difference between them is framework overhead, not behaviour.
 
 ### What I would harden next, in order
 
-1. **Extend evaluation from routing to answers.** `eval_routing.py` scores which
-   agent handled a turn; nothing scores whether the answer was right. The next
-   step is a fixed prompt set with expected outputs, plus groundedness checks on
-   the policy agent so a confident wrong answer fails the build.
+1. **Extend evaluation from routing to answers and retrieval.** `eval_routing.py`
+   scores which agent handled a turn; nothing scores whether the answer was right
+   or whether the right chunk was retrieved. The next step is a labelled
+   question→chunk set for recall@k, plus a groundedness check that fails an answer
+   making claims absent from its cited extracts.
+2. **Put the upload endpoint behind an HR role.** Right now anyone who can reach
+   the app can change what the assistant treats as company policy.
+3. **Add a reranker** over the fused candidates.
 2. **Automated coverage for `crewai` and `adk`**, using the same stub-LLM
    technique. Both are currently only verified by hand, which is how the ADK
    tool functions ran for a while against a hardcoded `user_id=1` — reporting

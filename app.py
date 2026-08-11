@@ -11,6 +11,11 @@ Endpoints:
   POST /api/backend               – switch orchestration backend at runtime
   GET  /api/graph                 – LangGraph structure (langgraph backend only)
   GET  /api/eval                  – LLM-as-judge scoring of recent routing
+  GET  /api/knowledge/status      – Milvus / embedding availability + counts
+  GET  /api/knowledge/documents   – documents in the knowledge base
+  POST /api/knowledge/ingest      – upload a document (file or pasted text)
+  DEL  /api/knowledge/documents/<id> – remove a document
+  GET  /api/knowledge/search      – preview hybrid retrieval for a query
   GET  /api/history               – conversation history for active user
   GET  /api/preview/leave-balance – leave balance
   GET  /api/preview/leave-requests– leave requests
@@ -26,6 +31,63 @@ from dotenv import load_dotenv
 import yaml
 
 load_dotenv()
+
+# Formats accepted for knowledge-base uploads. PDFs need pypdf, which is an
+# optional install — the status endpoint advertises whether it is present.
+TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".log", ".rst"}
+MAX_UPLOAD_CHARS = 2_000_000
+
+
+def _pdf_supported() -> bool:
+    try:
+        import pypdf  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _read_upload(upload) -> tuple:
+    """
+    Extract text from an uploaded file.
+
+    Returns (text, source_name). Raises ValueError with a message meant for the
+    user on anything it cannot read.
+    """
+    name = os.path.basename(upload.filename or "").strip()
+    if not name:
+        raise ValueError("The upload has no filename")
+    extension = os.path.splitext(name)[1].lower()
+
+    if extension == ".pdf":
+        if not _pdf_supported():
+            raise ValueError("PDF support needs `pip install pypdf`")
+        from pypdf import PdfReader
+        try:
+            reader = PdfReader(upload.stream)
+            text = "\n\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as e:
+            raise ValueError(f"Could not read that PDF: {e}") from e
+        if not text.strip():
+            raise ValueError(
+                "No text found in that PDF — scanned images need OCR, which "
+                "this project does not do"
+            )
+    elif extension in TEXT_EXTENSIONS:
+        raw = upload.read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+    else:
+        accepted = ", ".join(sorted(TEXT_EXTENSIONS | ({".pdf"} if _pdf_supported() else set())))
+        raise ValueError(f"Unsupported file type '{extension}'. Accepted: {accepted}")
+
+    if len(text) > MAX_UPLOAD_CHARS:
+        raise ValueError(f"Document is too large ({len(text)} chars, "
+                         f"limit {MAX_UPLOAD_CHARS})")
+    if not text.strip():
+        raise ValueError("That file is empty")
+    return text, name
 
 
 def create_app(config, db, llm, orchestrator, session_manager, logger):
@@ -164,6 +226,107 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
         if report["judged"]:
             judge.log_report(report, logger)
         return jsonify(report)
+
+    # ── Knowledge base ────────────────────────────────────────────────────────
+
+    def _store():
+        """Shared knowledge store, built once per app."""
+        if "store" not in active:
+            from knowledge import build_store
+            active["store"] = build_store(config)
+        return active["store"]
+
+    @app.route("/api/knowledge/status")
+    def knowledge_status():
+        from knowledge import knowledge_config
+        cfg = knowledge_config(config)
+        stats = _store().stats()
+        stats["enabled"] = bool(cfg["enabled"])
+        stats["accepted_formats"] = sorted(TEXT_EXTENSIONS | ({".pdf"} if _pdf_supported() else set()))
+        return jsonify(stats)
+
+    @app.route("/api/knowledge/documents")
+    def knowledge_documents():
+        return jsonify(_store().list_documents())
+
+    @app.route("/api/knowledge/documents/<doc_id>", methods=["DELETE"])
+    def knowledge_delete(doc_id):
+        removed = _store().delete_document(doc_id)
+        if not removed:
+            return jsonify({"error": f"No document '{doc_id}'", "deleted": 0}), 404
+        logger.log_event("knowledge_document_deleted", doc_id=doc_id,
+                         chunks=removed, deleted_by="hr")
+        return jsonify({"doc_id": doc_id, "deleted": removed})
+
+    @app.route("/api/knowledge/ingest", methods=["POST"])
+    def knowledge_ingest():
+        """
+        Add a document. Accepts either a multipart file upload or JSON
+        {text, source, title} for pasted content.
+        """
+        from knowledge import knowledge_config
+        from knowledge.embeddings import EmbeddingUnavailable
+        from knowledge.store import KnowledgeStoreUnavailable
+
+        cfg = knowledge_config(config)
+        uploaded_by = (request.form.get("uploaded_by")
+                       or (request.get_json(silent=True) or {}).get("uploaded_by")
+                       or "hr")
+
+        try:
+            if "file" in request.files:
+                upload = request.files["file"]
+                text, source = _read_upload(upload)
+                title = request.form.get("title") or source
+            else:
+                data = request.get_json(silent=True) or {}
+                text = (data.get("text") or "").strip()
+                source = (data.get("source") or "").strip()
+                title = (data.get("title") or source).strip()
+                if not text:
+                    return jsonify({"error": "No file uploaded and no text provided"}), 400
+                if not source:
+                    return jsonify({"error": "A source name is required"}), 400
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        try:
+            result = _store().ingest_text(
+                text=text, source=source, title=title, uploaded_by=uploaded_by,
+                max_chars=cfg["chunk_max_chars"], overlap=cfg["chunk_overlap"],
+            )
+        except KnowledgeStoreUnavailable as e:
+            return jsonify({"error": f"Knowledge base unavailable: {e}"}), 503
+        except EmbeddingUnavailable as e:
+            return jsonify({"error": f"Embeddings unavailable: {e}"}), 503
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        logger.log_event("knowledge_document_ingested", **result)
+        return jsonify(result), 201
+
+    @app.route("/api/knowledge/search")
+    def knowledge_search():
+        """Preview what retrieval returns for a query, without asking the LLM."""
+        from knowledge import knowledge_config
+        from knowledge.store import KnowledgeStoreUnavailable
+
+        query = (request.args.get("q") or "").strip()
+        if not query:
+            return jsonify({"error": "Missing query parameter 'q'"}), 400
+        cfg = knowledge_config(config)
+        try:
+            top_k = max(1, min(int(request.args.get("k", cfg["top_k"])), 20))
+        except (TypeError, ValueError):
+            top_k = cfg["top_k"]
+        try:
+            results = _store().hybrid_search(query, top_k=top_k,
+                                             candidate_k=cfg["candidate_k"])
+        except KnowledgeStoreUnavailable as e:
+            return jsonify({"error": str(e)}), 503
+        except Exception as e:
+            return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
+        return jsonify({"query": query, "results": results})
 
     @app.route("/api/history")
     def history():

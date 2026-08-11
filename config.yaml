@@ -24,6 +24,23 @@ database:
 conversation:
   history_size: 3
 
+# Knowledge base — hybrid RAG over Milvus, used by CompanyKnowledgeAgent.
+# Embeddings come from Google (GOOGLE_API_KEY); chat generation stays on the
+# llm provider above. Set enabled: false to answer from data/company_policy.txt
+# instead, which is also the automatic fallback when Milvus is unreachable.
+knowledge:
+  enabled: true
+  milvus_uri: http://localhost:19530
+  milvus_token: ""                    # leave empty for a local standalone Milvus
+  collection: hr_knowledge_base
+  embedding_model: gemini-embedding-001
+  dimension: 768                      # Matryoshka truncation of the native 3072
+  chunk_max_chars: 1200
+  chunk_overlap: 150
+  top_k: 5                            # extracts passed to the LLM
+  candidate_k: 20                     # per-arm candidates fetched before fusion
+  rrf_k: 60                           # Reciprocal Rank Fusion smoothing constant
+
 # Web server settings (used by app.py)
 server:
   host: "127.0.0.1"

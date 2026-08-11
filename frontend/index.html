@@ -128,6 +128,68 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 .eval-meta { font-size: .7rem; color: var(--muted); }
 .eval-meta code { color: var(--accent2); }
 
+/* Knowledge base */
+.kb-status { display: flex; align-items: center; gap: .5rem; font-size: .78rem; margin-bottom: .75rem; flex-wrap: wrap; }
+.kb-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .65rem; border-radius: 9999px; font-size: .7rem; font-weight: 600; }
+.kb-pill.up   { background: rgba(34,197,94,.15);  color: var(--green); }
+.kb-pill.down { background: rgba(239,68,68,.15);  color: var(--red); }
+.kb-pill.warn { background: rgba(245,158,11,.15); color: var(--yellow); }
+
+.dropzone {
+  border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 1.5rem 1rem; text-align: center; cursor: pointer;
+  transition: all .2s; background: var(--bg);
+}
+.dropzone:hover, .dropzone.drag { border-color: var(--accent); background: rgba(124,106,247,.07); }
+.dropzone .dz-icon { font-size: 1.6rem; display: block; margin-bottom: .4rem; }
+.dropzone .dz-main { font-size: .85rem; }
+.dropzone .dz-sub  { font-size: .68rem; color: var(--muted); margin-top: .25rem; }
+
+.kb-tabs { display: flex; gap: .4rem; margin-bottom: .75rem; }
+.kb-tab {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: .3rem .75rem; font-size: .72rem; cursor: pointer; color: var(--muted); transition: all .2s;
+}
+.kb-tab.active { border-color: var(--accent); color: var(--accent); }
+
+.kb-input, .kb-textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: .5rem .7rem; color: var(--text);
+  font-family: inherit; font-size: .8rem; margin-bottom: .5rem;
+}
+.kb-textarea { min-height: 130px; resize: vertical; font-family: 'Cascadia Mono', Consolas, monospace; font-size: .75rem; }
+.kb-input:focus, .kb-textarea:focus { outline: none; border-color: var(--accent); }
+.kb-btn {
+  background: var(--accent); border: none; border-radius: 8px; color: #fff;
+  padding: .5rem 1rem; font-size: .78rem; font-weight: 600; cursor: pointer; transition: opacity .2s;
+}
+.kb-btn:hover:not(:disabled) { opacity: .85; }
+.kb-btn:disabled { opacity: .45; cursor: wait; }
+.kb-msg { font-size: .75rem; margin-top: .6rem; }
+.kb-msg.ok  { color: var(--green); }
+.kb-msg.err { color: var(--red); }
+
+.kb-doc {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: .6rem .85rem; margin-bottom: .5rem;
+}
+.kb-doc-name { font-size: .82rem; font-weight: 600; }
+.kb-doc-meta { font-size: .68rem; color: var(--muted); margin-top: .15rem; }
+.kb-del {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--muted); cursor: pointer; padding: .25rem .6rem; font-size: .7rem; transition: all .2s;
+}
+.kb-del:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,.08); }
+
+.kb-hit { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--purple);
+          border-radius: 8px; padding: .6rem .85rem; margin-bottom: .5rem; }
+.kb-hit-head { display: flex; justify-content: space-between; gap: 1rem; font-size: .72rem; }
+.kb-hit-sec { color: var(--accent2); font-weight: 600; }
+.kb-hit-score { color: var(--muted); font-family: monospace; }
+.kb-hit-text { font-size: .78rem; margin-top: .35rem; line-height: 1.5; }
+.kb-hit-src { font-size: .66rem; color: var(--muted); margin-top: .3rem; }
+
 /* Leave balance widget */
 .balance-widget { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; }
 .balance-item { background: var(--card); border-radius: 8px; padding: .5rem; text-align: center; }
@@ -438,6 +500,7 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
       <div class="tab" onclick="switchTab('data'); loadData()">📋 Data</div>
       <div class="tab" onclick="switchTab('graph'); loadGraph()">🔗 Graph</div>
       <div class="tab" onclick="switchTab('evals')">🎯 Evals</div>
+      <div class="tab" onclick="switchTab('knowledge'); loadKnowledge()">📚 Knowledge</div>
     </div>
 
     <!-- Chat Panel -->
@@ -563,6 +626,78 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
       </div>
     </div>
 
+    <!-- Knowledge Panel -->
+    <div class="tab-panel" id="panel-knowledge">
+      <div class="panel-scroll">
+
+        <div class="data-card">
+          <div class="data-card-header">
+            <span class="data-card-title">📚 Knowledge Base</span>
+            <button class="data-refresh" onclick="loadKnowledge()">↻ Refresh</button>
+          </div>
+          <div id="kb-status"><div class="empty-state">Loading…</div></div>
+        </div>
+
+        <div class="data-card">
+          <div class="data-card-header">
+            <span class="data-card-title">⬆️ Add a document</span>
+          </div>
+          <div style="padding:0 1rem 1rem">
+            <div class="kb-tabs">
+              <div class="kb-tab active" id="kb-mode-file"  onclick="kbMode('file')">Upload a file</div>
+              <div class="kb-tab"        id="kb-mode-paste" onclick="kbMode('paste')">Paste text</div>
+            </div>
+
+            <div id="kb-file-mode">
+              <label class="dropzone" id="kb-dropzone" for="kb-file">
+                <span class="dz-icon">📄</span>
+                <span class="dz-main" id="kb-file-label">Drop a policy document here, or click to browse</span>
+                <span class="dz-sub" id="kb-formats">…</span>
+              </label>
+              <input type="file" id="kb-file" style="display:none" onchange="kbFilePicked()" />
+            </div>
+
+            <div id="kb-paste-mode" style="display:none">
+              <input class="kb-input" id="kb-source" placeholder="Document name, e.g. remote-work-2026.md" />
+              <textarea class="kb-textarea" id="kb-text" placeholder="Paste the policy text here…"></textarea>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem">
+              <button class="kb-btn" id="kb-upload-btn" onclick="kbUpload()">Ingest document</button>
+              <span class="backend-note" style="margin:0">
+                Re-uploading the same filename replaces the previous copy.
+              </span>
+            </div>
+            <div class="kb-msg" id="kb-msg"></div>
+          </div>
+        </div>
+
+        <div class="data-card">
+          <div class="data-card-header">
+            <span class="data-card-title">🗂️ Stored documents</span>
+          </div>
+          <div id="kb-docs" style="padding:0 1rem 1rem"><div class="empty-state">Loading…</div></div>
+        </div>
+
+        <div class="data-card">
+          <div class="data-card-header">
+            <span class="data-card-title">🔍 Retrieval preview</span>
+          </div>
+          <div style="padding:0 1rem 1rem">
+            <p class="backend-note" style="margin:0 0 .5rem">
+              Runs the same hybrid search the agent uses — dense vectors fused with BM25 —
+              without asking the LLM. Useful for seeing exactly what grounds an answer.
+            </p>
+            <input class="kb-input" id="kb-query" placeholder="e.g. LWP, or: how many days can I work remotely?"
+                   onkeydown="if(event.key==='Enter'){kbSearch()}" />
+            <button class="kb-btn" onclick="kbSearch()">Search</button>
+            <div id="kb-hits" style="margin-top:.75rem"></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
   </div><!-- /main -->
 </div><!-- /app -->
 
@@ -594,6 +729,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStatus();
   loadBalance();
   setupInputResize();
+  setupDropzone();
 
   document.getElementById('msg-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -880,6 +1016,187 @@ async function runEval() {
   } catch (e) {
     el.innerHTML = '<div class="empty-state">Error running evaluation.</div>';
   }
+}
+
+// ── Knowledge base ───────────────────────────────────────────────
+let kbUploadMode = 'file';
+
+function kbMode(mode) {
+  kbUploadMode = mode;
+  document.getElementById('kb-mode-file').classList.toggle('active', mode === 'file');
+  document.getElementById('kb-mode-paste').classList.toggle('active', mode === 'paste');
+  document.getElementById('kb-file-mode').style.display  = mode === 'file'  ? '' : 'none';
+  document.getElementById('kb-paste-mode').style.display = mode === 'paste' ? '' : 'none';
+}
+
+function kbFilePicked() {
+  const f = document.getElementById('kb-file').files[0];
+  document.getElementById('kb-file-label').textContent =
+    f ? `${f.name} — ${(f.size / 1024).toFixed(1)} KB` : 'Drop a policy document here, or click to browse';
+}
+
+async function loadKnowledge() {
+  await Promise.all([loadKbStatus(), loadKbDocs()]);
+}
+
+async function loadKbStatus() {
+  const el = document.getElementById('kb-status');
+  try {
+    const d = await apiFetch('/api/knowledge/status');
+    document.getElementById('kb-formats').textContent =
+      `Accepted: ${(d.accepted_formats || []).join(', ')}`;
+
+    let pills = '';
+    if (!d.enabled) {
+      pills += `<span class="kb-pill warn">RAG disabled in config.yaml</span>`;
+    } else if (d.available) {
+      pills += `<span class="kb-pill up">Milvus connected</span>`;
+    } else {
+      pills += `<span class="kb-pill down">Milvus unavailable</span>`;
+    }
+    if (!d.embedding_configured) {
+      pills += `<span class="kb-pill warn">No GOOGLE_API_KEY — embeddings off</span>`;
+    }
+
+    const detail = d.available
+      ? `<span>${d.documents} document(s) · ${d.chunks} chunks · ${escHtml(d.embedding_model || '')} @ ${d.dimension}d</span>`
+      : `<span style="color:var(--muted)">${escHtml(d.error || 'not connected')}</span>`;
+
+    el.innerHTML = `<div style="padding:0 1rem 1rem">
+      <div class="kb-status">${pills}${detail}</div>
+      <div class="backend-note" style="margin:0">
+        Collection <code>${escHtml(d.collection || '')}</code> at <code>${escHtml(d.uri || '')}</code>.
+        ${d.available ? '' : 'The policy agent falls back to the bundled policy file while this is down.'}
+      </div></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Could not read knowledge base status.</div>';
+  }
+}
+
+async function loadKbDocs() {
+  const el = document.getElementById('kb-docs');
+  try {
+    const docs = await apiFetch('/api/knowledge/documents');
+    if (!docs.length) {
+      el.innerHTML = `<div class="empty-state">Nothing ingested yet.<br>
+        Upload a document above, or run <code>python ingest_knowledge.py</code>.</div>`;
+      return;
+    }
+    el.innerHTML = docs.map(d => `
+      <div class="kb-doc">
+        <div>
+          <div class="kb-doc-name">${escHtml(d.title || d.source)}</div>
+          <div class="kb-doc-meta">
+            ${escHtml(d.source)} · ${d.chunks} chunks ·
+            uploaded ${escHtml((d.uploaded_at || '').replace('T', ' ').replace('Z', ''))}
+            by ${escHtml(d.uploaded_by || '—')} · <code>${escHtml(d.doc_id)}</code>
+          </div>
+        </div>
+        <button class="kb-del" onclick="kbDelete('${escHtml(d.doc_id)}', '${escHtml(d.source)}')">Remove</button>
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Could not load documents.</div>';
+  }
+}
+
+async function kbUpload() {
+  const btn = document.getElementById('kb-upload-btn');
+  const msg = document.getElementById('kb-msg');
+  msg.className = 'kb-msg';
+  msg.textContent = '';
+
+  let opts;
+  if (kbUploadMode === 'file') {
+    const file = document.getElementById('kb-file').files[0];
+    if (!file) { msg.className = 'kb-msg err'; msg.textContent = 'Choose a file first.'; return; }
+    const form = new FormData();
+    form.append('file', file);
+    form.append('uploaded_by', 'hr');
+    opts = { method: 'POST', body: form };
+  } else {
+    const text = document.getElementById('kb-text').value.trim();
+    const source = document.getElementById('kb-source').value.trim();
+    if (!text)   { msg.className = 'kb-msg err'; msg.textContent = 'Paste some text first.'; return; }
+    if (!source) { msg.className = 'kb-msg err'; msg.textContent = 'Give the document a name.'; return; }
+    opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, source, title: source, uploaded_by: 'hr' }),
+    };
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Embedding and indexing…';
+  try {
+    const res = await fetch('/api/knowledge/ingest', opts);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    msg.className = 'kb-msg ok';
+    msg.textContent = `Ingested "${data.source}" — ${data.chunks} chunks` +
+      (data.replaced_chunks ? `, replacing ${data.replaced_chunks} from the previous copy.` : '.');
+    document.getElementById('kb-text').value = '';
+    document.getElementById('kb-source').value = '';
+    document.getElementById('kb-file').value = '';
+    kbFilePicked();
+    loadKnowledge();
+  } catch (e) {
+    msg.className = 'kb-msg err';
+    msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Ingest document';
+  }
+}
+
+async function kbDelete(docId, source) {
+  if (!confirm(`Remove "${source}" from the knowledge base?\n\nThe agent will stop citing it.`)) return;
+  try {
+    const res = await fetch(`/api/knowledge/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    loadKnowledge();
+  } catch (e) {
+    alert(`Could not remove: ${e.message}`);
+  }
+}
+
+async function kbSearch() {
+  const q = document.getElementById('kb-query').value.trim();
+  const el = document.getElementById('kb-hits');
+  if (!q) return;
+  el.innerHTML = '<div class="empty-state">Searching…</div>';
+  try {
+    const d = await apiFetch(`/api/knowledge/search?q=${encodeURIComponent(q)}`);
+    if (!d.results.length) { el.innerHTML = '<div class="empty-state">Nothing retrieved.</div>'; return; }
+    el.innerHTML = d.results.map(r => `
+      <div class="kb-hit">
+        <div class="kb-hit-head">
+          <span class="kb-hit-sec">[${r.rank}] ${escHtml(r.section || r.title || '—')}</span>
+          <span class="kb-hit-score">rrf ${r.score.toFixed(4)}</span>
+        </div>
+        <div class="kb-hit-text">${escHtml(r.text.slice(0, 320))}${r.text.length > 320 ? '…' : ''}</div>
+        <div class="kb-hit-src">${escHtml(r.source)} · chunk ${r.chunk_index + 1}/${r.total_chunks}</div>
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Search failed.</div>';
+  }
+}
+
+function setupDropzone() {
+  const dz = document.getElementById('kb-dropzone');
+  if (!dz) return;
+  ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add('drag');
+  }));
+  ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove('drag');
+  }));
+  dz.addEventListener('drop', e => {
+    if (e.dataTransfer.files.length) {
+      document.getElementById('kb-file').files = e.dataTransfer.files;
+      kbFilePicked();
+    }
+  });
 }
 
 // ── Leave balance sidebar ────────────────────────────────────────
