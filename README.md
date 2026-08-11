@@ -6,19 +6,28 @@ A lightweight multi-agent HR assistant that demonstrates **intent-based orchestr
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Clone and install dependencies
 
 ```bash
-cd E:\Projects\multiagent_
+git clone https://github.com/mallahim01/hr_management-multiagent_orchestration.git
+cd hr_management-multiagent_orchestration
+
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Set your OpenAI API key
+### 2. Set your API key
+
+The default provider is **Groq** (OpenAI-compatible endpoint, generous free tier):
 
 ```bash
-copy .env.example .env
-# Edit .env and set: OPENAI_API_KEY=sk-...
+cp .env.example .env             # Windows: copy .env.example .env
+# Edit .env and set: GROQ_API_KEY=gsk_...
 ```
+
+To use OpenAI instead, set `OPENAI_API_KEY` in `.env` and `llm.provider: openai`
+in `config.yaml`. See [Configuration](#configuration) for the full list.
 
 ### 3. Run
 
@@ -31,6 +40,14 @@ copy .env.example .env
 | HTML report | `python main.py --preview-html` |
 
 Open **http://127.0.0.1:5000** for the web UI.
+
+### 4. Run the tests
+
+```bash
+python verify.py           # imports, DB seeding, agent registry
+python test_langgraph.py   # LangGraph orchestrator — offline, no API key needed
+python test_backends.py    # all 4 backends against the live LLM (costs tokens)
+```
 
 ---
 
@@ -70,9 +87,10 @@ Restart the server. No other code changes needed.
 ## Project Structure
 
 ```
-multiagent_/
+.
 ├── agents/               # 5 specialised sub-agents
 ├── core/                 # LLM wrapper, intent detector, session, logger
+├── docs/                 # Architecture deep-dive
 ├── orchestration/        # 4 backends + abstract base + factory
 ├── database/             # SQLite schema + CRUD helpers
 ├── preview/              # CLI viewer + HTML report generator
@@ -83,6 +101,9 @@ multiagent_/
 ├── app.py                # Flask web server
 └── main.py               # CLI entry point
 ```
+
+See [docs/architecture.md](docs/architecture.md) for how agents, orchestrators,
+and session state fit together.
 
 ---
 
@@ -103,9 +124,10 @@ multiagent_/
 ```yaml
 # config.yaml
 orchestrator_backend: native   # native | crewai | langgraph | adk
-active_user_id: 1              # Auto-created on first run
+active_user_id: 3              # Auto-created on first run
 llm:
-  model: gpt-4o-mini
+  provider: groq               # groq | openai
+  model: llama-3.3-70b-versatile
   max_retries: 3
   temperature: 0.7
 database:
@@ -113,6 +135,11 @@ database:
 conversation:
   history_size: 3              # Recent exchanges sent as context
 ```
+
+`llm.provider` selects both the API endpoint and which `.env` keys are read
+(see `PROVIDERS` in [core/llm_wrapper.py](core/llm_wrapper.py)). For Groq you may
+set `GROQ_API_KEY_2` / `GROQ_API_KEY_3` as spares — the wrapper rotates to the
+next key when one hits its free-tier rate limit.
 
 ---
 
@@ -146,6 +173,14 @@ Three dummy users are seeded automatically on first run.
 
 ---
 
-> **Note:** CrewAI, LangGraph, and ADK adapters are implemented as stubs that display
-> the integration pattern and delegate to native logic. Install `crewai` or `langgraph`
-> and extend the respective adapter class to activate full framework integration.
+## Backend Status
+
+| Backend | Implementation | Tested |
+|---|---|---|
+| `native` | Reference implementation — plain Python intent routing | Yes |
+| `langgraph` | Real compiled `StateGraph`; nodes call the same agents as native | Yes — `python test_langgraph.py` (8 offline checks, no API key needed) |
+| `crewai` | Real `Agent`/`Task`/`Crew`; the native agent runs first, then a sequential Crew polishes the reply | Manually, via `test_backends.py` |
+| `adk` | Real `google.adk` root agent with the five agents exposed as tools; Gemini decides routing | Not covered by automated tests |
+
+All four share the same `BaseOrchestrator` contract and the same agents — only the
+routing machinery differs. See [docs/architecture.md](docs/architecture.md).
