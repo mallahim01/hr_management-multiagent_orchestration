@@ -1,32 +1,105 @@
-# 🏢 ACME HR – Multi-Agent System
+# 🏢 ACME HR — Multi-Agent Orchestration
 
-A multi-agent HR assistant built around a **custom intent-based orchestrator**, with
-the orchestration layer behind an interface so a different engine can be swapped in
-by changing one line of config.
+A production-shaped HR assistant: five specialist agents, an intent router, hybrid
+retrieval over Milvus, and an orchestration layer that can be swapped between four
+execution engines by changing one line of config.
 
-Five specialist agents share one `SessionContext`: leave requests (multi-turn
-slot-filling with balance and overlap validation), leave balance, company-policy
-Q&A answered by **hybrid RAG over Milvus** with cited sources, generic HR tickets,
-and a general fallback. State, conversation history, and submitted records live
-in SQLite; policy documents live in a Milvus collection that HR can upload to
-from the web UI.
+Ask it a policy question and it answers from a vector store with citations you can
+follow back to a section of a document. Ask for leave and it fills the request over
+several turns, checks it against your balance and your existing bookings, and
+refuses — with reasons, in the log — if it doesn't hold up.
 
-Groq runs the chat models, Google runs the embeddings.
+`docker compose up` brings up the whole thing: app, Milvus, and its dependencies.
 
-**Four orchestration backends** implement the same `BaseOrchestrator` contract:
+---
 
-- **`native`** — the reference implementation. Plain-Python intent routing, no framework.
-- **`langgraph`** — a real compiled `StateGraph` whose nodes call the same agents,
-  reports the node path each turn took, and contains a failing agent instead of
-  aborting. The most thoroughly covered backend.
-- **`crewai`** — a real `Agent`/`Task`/`Crew` integration. Exercised manually, not
-  by automated tests.
-- **`adk`** — a real Google ADK root agent exposing the five agents as tools, with
-  Gemini making the routing decision itself. **Not covered by automated tests.**
+## The architecture in one idea
 
-Swapping the backend changes the machinery, not the behaviour — there is a test
-asserting that `native` and `langgraph` produce identical routing decisions for
-the same input.
+**Orchestration is a port; the frameworks are adapters.**
+
+The agents, the session state, the database and the retrieval layer sit *outside*
+the orchestration package and never import it. `BaseOrchestrator`
+([orchestration/base.py](orchestration/base.py)) defines the contract between
+them. Four backends implement it:
+
+| Backend | Engine | Status |
+|---|---|---|
+| **`native`** | none — plain Python | **Default.** The reference implementation |
+| **`langgraph`** | a compiled LangGraph `StateGraph` | **Featured.** The most thoroughly covered path |
+| `crewai` | CrewAI `Agent`/`Task`/`Crew` | Real integration, optional install, no automated coverage |
+| `adk` | Google ADK root agent with tool dispatch | Real integration, optional install, no automated coverage |
+
+This is not a wrapper that keeps a framework at arm's length. It is a boundary
+drawn so that the *domain* — what an HR assistant actually does — survives the
+framework underneath it changing.
+
+### What that means at runtime
+
+With `orchestrator_backend: langgraph`, a real `StateGraph` is compiled at startup
+and **LangGraph genuinely runs the turn**: it owns the topology, evaluates the
+conditional edge, decides which node to traverse to, merges state between nodes and
+streams the steps back. `BaseOrchestrator.process()` never executes on that path —
+the adapter overrides it. There is exactly one orchestrator running, and it is
+LangGraph's.
+
+What LangGraph deliberately does *not* provide is the routing **policy**.
+`add_conditional_edges` requires the caller to supply the branch function; the
+library has no opinion about how you choose. That function
+([`_route_to_agent`](orchestration/langgraph_adapter.py)) consults this project's
+own `IntentDetector` — a single JSON-mode LLM call returning an intent, a
+confidence and a rationale. Supplying it is the documented use of the API, not a
+detour around it.
+
+Three things stay outside every engine, on purpose:
+
+- **The agents**, resolved through `AGENT_REGISTRY`. No backend knows what one does.
+- **Session state**, in `SessionContext` and persisted to SQLite — *not* in a
+  LangGraph checkpointer, precisely so all four backends share it.
+- **The routing policy**, so a change to how intent is decided lands everywhere at once.
+
+### Why you should believe any of that
+
+Claims about decoupling are cheap, so each one here has something you can run:
+
+| Claim | Check |
+|---|---|
+| A framework can be removed entirely | The **Docker image installs neither CrewAI nor ADK** and the system runs fully; selecting one returns a clean `502` |
+| No framework leaks into the domain | `langgraph`, `crewai` and `google.adk` are imported in **exactly one directory** |
+| Backends are behaviourally interchangeable | `test_langgraph.py::test_matches_native_routing` asserts native and LangGraph route **identically** |
+| State really isn't framework-owned | Start a leave request under LangGraph, switch to Native mid-flow, confirm — it submits |
+| Domain changes don't touch adapters | Replacing the policy agent with Milvus hybrid RAG reached all four backends with **zero adapter edits** |
+
+### Where the abstraction strains
+
+`BaseOrchestrator` encodes an opinion: classify once, then one agent answers the
+turn. LangGraph and CrewAI fit it cleanly. **ADK does not** — Gemini performs its
+own tool selection, so there is no routing step to implement; that adapter
+overrides `process()`, bypasses the interface for slot-filling, and needs a
+side-channel to reach the live session. It works, and it is honest evidence of the
+limit: a framework with a genuinely different execution model would strain this
+interface rather than slot into it.
+
+---
+
+## What it does
+
+Five agents share one `SessionContext`:
+
+| Agent | Behaviour |
+|---|---|
+| **Leave Request** | Multi-turn slot-filling; validates against balance and overlapping bookings; atomic submission |
+| **Leave Balance** | Live read from SQLite |
+| **Company Knowledge** | Hybrid RAG over Milvus — dense + BM25, fused — with citations, and a refusal when nothing is retrieved |
+| **HR Request** | Creates a tracked ticket |
+| **General Assistant** | Fallback for anything unrouted |
+
+Groq runs the chat models; Google runs the embeddings; SQLite holds records,
+conversation history and slot-filling state; Milvus holds the policy corpus that
+HR can upload to from the web UI.
+
+Everything the system does is written to a JSONL log — turns and domain events in
+one stream — with a [recorded session](logs/sample-session.log) committed so the
+behaviour is inspectable without running anything.
 
 ---
 
@@ -185,12 +258,12 @@ flowchart TB
     SM["SessionManager<br><i>core/session.py</i>"]
     LOG["InteractionLogger<br><i>core/logger.py</i>"]
 
-    subgraph orch ["Orchestration — one interface, four engines"]
-        BASE["BaseOrchestrator<br><i>orchestration/base.py</i>"]
-        NAT["native"]
-        LG["<b>langgraph</b><br>StateGraph"]
-        CREW["crewai<br><i>optional</i>"]
-        ADK["adk<br><i>optional</i>"]
+    subgraph orch ["Orchestration — my interface, four interchangeable engines"]
+        BASE["<b>BaseOrchestrator</b><br><i>orchestration/base.py</i><br>the contract — not a framework"]
+        NAT["native<br><i>default · plain Python</i>"]
+        LG["<b>langgraph</b><br>StateGraph<br><i>featured</i>"]
+        CREW["crewai<br><i>optional install</i>"]
+        ADK["adk<br><i>optional install</i>"]
     end
 
     ID["IntentDetector<br><i>core/intent_detector.py</i>"]
@@ -326,6 +399,61 @@ flowchart LR
     classDef store fill:#1a3a52,stroke:#4a90d9,color:#e8f4fd
     class COL store
 ```
+
+### How the system is evaluated
+
+Two harnesses answer different questions. Deterministic scoring is used wherever
+a fixed expectation is possible; the LLM judge is confined to the one place a
+string match cannot work.
+
+```mermaid
+flowchart TB
+    subgraph L1 ["① Offline suites — stubs only: no API key, no network, no Milvus"]
+        direction LR
+        T1["test_langgraph.py<br><i>graph · routing · containment</i>"]
+        T2["test_validation.py<br><i>safeguards · atomicity</i>"]
+        T3["test_api.py<br><i>user + backend switching</i>"]
+        T4["test_rag.py<br><i>chunking · grounding · refusal</i>"]
+        T5["test_eval.py<br><i>the scoring logic itself</i>"]
+    end
+
+    subgraph L2 ["② eval_system.py — fixed expectations, written before the run"]
+        direction LR
+        GS[("evals/golden_set.json<br>16 hand-labelled cases")]
+        GS --> S1["Routing<br><b>deterministic</b><br>expected agent<br>= string match"]
+        GS --> S2["Retrieval<br><b>deterministic</b><br>recall@k on the<br>expected section"]
+        GS --> S3["Refusal<br><b>LLM judge</b><br>did it decline<br>to invent a policy?"]
+        S1 --> SC["Score<br><i>non-zero exit on failure</i>"]
+        S2 --> SC
+        S3 --> SC
+    end
+
+    subgraph L3 ["③ eval_routing.py — the LLM as judge, over real logged traffic"]
+        direction LR
+        LOGF[("logs/interactions.log")] --> SKIP{{"drop slot-fill<br>continuations —<br>no routing decision<br>was taken"}}
+        SKIP --> RJ["RoutingJudge<br><i>separate prompt, sees the<br>reply, judges after the fact</i>"]
+        RJ --> ACC["Accuracy =<br>correct ÷ correct+incorrect<br><i>ambiguous excluded</i>"]
+    end
+
+    L1 -.->|"gate before anything else runs"| L2
+    L2 -.->|"then measure live behaviour"| L3
+    T5 -. "scores the judge against<br>hand-labelled routing" .-> RJ
+    ACC -. "summary written back" .-> LOGF
+
+    classDef det fill:#14532d,stroke:#4ade80,color:#f0fdf4
+    classDef judge fill:#3f2d12,stroke:#fbbf24,color:#fffbeb
+    classDef store fill:#0c2f4a,stroke:#60a5fa,color:#eff6ff
+    classDef test fill:#1e1b3a,stroke:#818cf8,color:#eef2ff
+    class S1,S2 det
+    class S3,RJ judge
+    class GS,LOGF store
+    class T1,T2,T3,T4,T5 test
+```
+
+Green is deterministic, amber is model-judged. The judge is deliberately the
+smallest part of the picture — and `test_eval.py --live` scores the judge itself
+against hand-labelled routing, so an evaluator that quietly rubber-stamps
+everything fails its own test.
 
 ### Container topology
 
@@ -515,6 +643,9 @@ leave a request with no matching deduction. See `python test_validation.py`.
 
 ## Backend Status
 
+Each backend's implementation and coverage in detail. See
+[The architecture in one idea](#the-architecture-in-one-idea) for how they relate.
+
 | Backend | Implementation | Tested |
 |---|---|---|
 | `native` | Reference implementation — plain Python intent routing | Yes |
@@ -522,7 +653,7 @@ leave a request with no matching deduction. See `python test_validation.py`.
 | `crewai` | Real `Agent`/`Task`/`Crew`; the native agent runs first, then a sequential Crew polishes the reply | Manually, against live Groq. No automated coverage |
 | `adk` | Real `google.adk` root agent with the five agents exposed as tools; Gemini decides routing | Manually, against live Gemini. No automated coverage |
 
-**`crewai` requires the `litellm` extra** (already in `requirements.txt`). Passing a
+**`crewai` requires the `litellm` extra** (in `requirements-backends.txt`). Passing a
 model *string* to a CrewAI agent makes it attach a `cache_breakpoint` field that
 Groq rejects, so the adapter builds an explicit `crewai.LLM` object instead.
 
@@ -736,12 +867,19 @@ classification entirely while an agent holds the conversation for slot-filling.
 ### Why pluggable backends
 
 The orchestration framework landscape moves quickly, and the interesting question
-is usually "what does this framework actually buy me?" — which is hard to answer
-if the business logic is welded to one of them. Here the agents, session handling,
-database access, and prompts sit behind `BaseOrchestrator`, and each backend only
-supplies routing machinery. That makes the comparison concrete: the LangGraph and
-native backends are asserted by test to produce identical routing decisions, so
-any difference between them is framework overhead, not behaviour.
+is usually "what does this framework actually buy me?" — which is impossible to
+answer if the business logic is welded to one of them.
+
+Drawing the boundary at `BaseOrchestrator` makes the comparison concrete rather
+than rhetorical. Native and LangGraph are asserted by test to produce identical
+routing, so any difference between them is framework overhead rather than
+behaviour — and the same swap that proves the point also made adding hybrid RAG a
+change to one agent instead of four adapters.
+
+The cost is a layer that earns nothing on a single-framework project, and an
+interface whose shape is an opinion — see
+[Where the abstraction strains](#where-the-abstraction-strains) for the case
+(ADK) where that opinion is wrong.
 
 ### What is and isn't verified
 
