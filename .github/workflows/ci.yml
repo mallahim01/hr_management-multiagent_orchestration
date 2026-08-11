@@ -63,12 +63,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Required. Without it the action falls back to the default `docker`
+      # driver, which cannot export a build cache — `cache-to: type=gha` then
+      # fails with "Cache export is not supported for the docker driver".
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build the application image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: false
-          load: true
+          load: true                     # export to the local daemon so `docker run` works
           tags: hr-multiagent-app:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
