@@ -6,10 +6,15 @@ A production-shaped HR assistant: five specialist agents, an intent router, hybr
 retrieval over Milvus, and an orchestration layer that can be swapped between four
 execution engines by changing one line of config.
 
-Ask it a policy question and it answers from a vector store with citations you can
-follow back to a section of a document. Ask for leave and it fills the request over
-several turns, checks it against your balance and your existing bookings, and
-refuses — with reasons, in the log — if it doesn't hold up.
+Ask it a policy question and it answers from a vector store, streaming, with
+citations you can follow back to a section of a document. Ask for leave and it
+fills the request over several turns, checks it against your balance and your
+existing bookings, and refuses — with reasons, in the log — if it doesn't hold up.
+
+Every turn reports what it cost and where the time went. Retrieval quality,
+routing quality and whether an answer's claims are actually supported by its
+sources are all measured against hand-labelled data, and both LLM judges are
+themselves scored against known-good and known-bad examples.
 
 `docker compose up` brings up the whole thing: app, Milvus, and its dependencies.
 
@@ -226,14 +231,17 @@ python test_validation.py    # leave safeguards + DB rules – offline, no API k
 python test_api.py           # Flask routes, user + backend switching – offline
 python test_rag.py           # chunking, grounding, citations – offline, no API key
 python test_eval.py          # routing-eval scoring logic  – offline, no API key
-python test_eval.py --live   # …plus a live judge probe against labelled data
-python test_rag.py  --live   # …plus real Milvus + Gemini retrieval checks
+python test_metrics.py       # cost/latency, streaming, groundedness – offline
+python test_eval.py    --live # …plus a live judge probe against labelled data
+python test_rag.py     --live # …plus real Milvus + Gemini retrieval checks
+python test_metrics.py --live # …plus a live groundedness probe on fabrications
 python test_backends.py      # each installed backend against the live LLM
 
 python eval_system.py        # golden-set evaluation (see Evaluation)
+python eval_retrieval.py     # 25-case retrieval benchmark
 ```
 
-79 offline checks. Or inside the container: `docker compose run --rm app test`.
+93 offline checks. Or inside the container: `docker compose run --rm app test`.
 
 ### Continuous integration
 
@@ -252,7 +260,7 @@ committed once cannot be taken back by a later commit. Both patterns were verifi
 against a deliberately violating file — a check that cannot fire is worse than no
 check.
 
-The four `test_*.py` suites run against test doubles and a throwaway database, so they
+The six `test_*.py` suites run against test doubles and a throwaway database, so they
 are deterministic and need no key, no network and no Milvus. `test_backends.py`
 and the `--live` passes consume tokens.
 
@@ -439,6 +447,7 @@ flowchart TB
         T3["test_api.py<br><i>user + backend switching</i>"]
         T4["test_rag.py<br><i>chunking · grounding · refusal</i>"]
         T5["test_eval.py<br><i>the scoring logic itself</i>"]
+        T6["test_metrics.py<br><i>cost · streaming · the<br>groundedness judge</i>"]
     end
 
     subgraph L2 ["② eval_system.py — fixed expectations, written before the run"]
@@ -446,13 +455,22 @@ flowchart TB
         GS[("evals/golden_set.json<br>16 hand-labelled cases")]
         GS --> S1["Routing<br><b>deterministic</b><br>expected agent<br>= string match"]
         GS --> S2["Retrieval<br><b>deterministic</b><br>recall@k on the<br>expected section"]
+        GS --> S4["Groundedness<br><b>LLM judge</b><br>every claim traced<br>to an extract"]
         GS --> S3["Refusal<br><b>LLM judge</b><br>did it decline<br>to invent a policy?"]
         S1 --> SC["Score<br><i>non-zero exit on failure</i>"]
         S2 --> SC
+        S4 --> SC
         S3 --> SC
     end
 
-    subgraph L3 ["③ eval_routing.py — the LLM as judge, over real logged traffic"]
+    subgraph L4 ["③ eval_retrieval.py — the retrieval benchmark"]
+        direction LR
+        RB[("evals/retrieval_benchmark.json<br>25 cases · evals/corpus/ · 74 chunks")]
+        RB --> ARMS["dense · sparse ·<br>rrf · weighted"]
+        ARMS --> REC["recall@1/3/5 + MRR<br><i>per arm, so 'hybrid helps'<br>is measured, not assumed</i>"]
+    end
+
+    subgraph L3 ["④ eval_routing.py — the LLM as judge, over real logged traffic"]
         direction LR
         LOGF[("logs/interactions.log")] --> SKIP{{"drop slot-fill<br>continuations —<br>no routing decision<br>was taken"}}
         SKIP --> RJ["RoutingJudge<br><i>separate prompt, sees the<br>reply, judges after the fact</i>"]
@@ -462,21 +480,22 @@ flowchart TB
     L1 -.->|"gate before anything else runs"| L2
     L2 -.->|"then measure live behaviour"| L3
     T5 -. "scores the judge against<br>hand-labelled routing" .-> RJ
+    T6 -. "scores the judge against<br>hand-labelled fabrications" .-> S4
     ACC -. "summary written back" .-> LOGF
 
     classDef det fill:#14532d,stroke:#4ade80,color:#f0fdf4
     classDef judge fill:#3f2d12,stroke:#fbbf24,color:#fffbeb
     classDef store fill:#0c2f4a,stroke:#60a5fa,color:#eff6ff
     classDef test fill:#1e1b3a,stroke:#818cf8,color:#eef2ff
-    class S1,S2 det
-    class S3,RJ judge
-    class GS,LOGF store
-    class T1,T2,T3,T4,T5 test
+    class S1,S2,ARMS,REC det
+    class S3,S4,RJ judge
+    class GS,LOGF,RB store
+    class T1,T2,T3,T4,T5,T6 test
 ```
 
-Green is deterministic, amber is model-judged. The judge is deliberately the
-smallest part of the picture — and `test_eval.py --live` scores the judge itself
-against hand-labelled routing, so an evaluator that quietly rubber-stamps
+Green is deterministic, amber is model-judged. Both judges are themselves scored
+against hand-labelled data — `test_eval.py --live` on routing, `test_metrics.py
+--live` on fabricated claims — so an evaluator that quietly rubber-stamps
 everything fails its own test.
 
 ### Container topology
@@ -549,12 +568,14 @@ trap the conversation, and an `agent_node_failed` event is logged.
 ```
 .
 ├── agents/               # 5 specialised sub-agents
-├── core/                 # LLM wrapper, intent detector, session, logger, routing judge
+├── core/                 # LLM wrapper, intent detector, session, logger,
+│                         #   metrics, streaming, routing + groundedness judges
 ├── knowledge/            # chunking, Gemini embeddings, Milvus hybrid store
-├── evals/                # golden_set.json — hand-labelled evaluation cases
+├── evals/                # golden_set.json, retrieval_benchmark.json, corpus/
 ├── logs/                 # JSONL interaction log + a committed sample session
 ├── docker/               # container entrypoint
-├── docs/                 # Architecture deep-dive
+├── .github/workflows/    # CI
+├── docs/                 # Architecture deep-dive + submission notes
 ├── orchestration/        # 4 backends + abstract base + factory
 ├── database/             # SQLite schema + CRUD helpers
 ├── preview/              # CLI viewer + HTML report generator
@@ -651,6 +672,8 @@ leave a request with no matching deduction. See `python test_validation.py`.
 | POST | `/api/user` | Switch the acting employee |
 | POST | `/api/backend` | Switch orchestration backend at runtime |
 | GET | `/api/graph` | Compiled StateGraph + last node path (LangGraph only) |
+| POST | `/api/chat/stream` | Same turn as `/api/chat`, streamed over SSE |
+| GET | `/api/metrics/summary` | Aggregate cost and latency over recent turns |
 | GET | `/api/eval` | LLM-as-judge scoring of recent routing |
 | GET | `/api/knowledge/status` | Milvus/embedding availability, document counts |
 | GET | `/api/knowledge/documents` | Documents in the knowledge base |
@@ -754,6 +777,59 @@ LangGraph, CrewAI and ADK all use RAG without knowing Milvus exists.
 
 ---
 
+## Cost and latency
+
+Every turn is measured: token counts from the provider's usage field, cost from a
+rate table in `config.yaml`, and wall-clock split across the three stages that
+cost differently. The split is written onto the same log line as the turn, shown
+under each reply in the UI, and aggregated in the **Evals** tab
+(`GET /api/metrics/summary`).
+
+A warm turn answering a policy question:
+
+| Stage | Cost | Latency | Share |
+|---|---|---|---|
+| classification | $0.000347 | 0.32s | **47% of cost, 30% of latency** |
+| retrieval | $0.000001 | 0.38s | ~0% of cost |
+| generation | $0.000390 | 0.24s | 53% of cost |
+| **total** | **$0.00074** | **~1.1s** | |
+
+Two things fall out of that table that were not obvious beforehand:
+
+- **Classification is a third of the latency for one routing decision.** That is
+  the direct justification for skipping it while an agent holds the session —
+  the slot-fill short-circuit is not a micro-optimisation, it removes ~30% of the
+  turn.
+- **Retrieval is essentially free but not fast.** The embedding call is cheap; the
+  Milvus round trip is what costs time. A cold first query is far worse — 5.5s
+  against 0.4s warm — because the collection load happens lazily.
+
+Rates are a snapshot, not a live feed. A model missing from the table is costed at
+**zero rather than guessed**, and any turn where the provider reported no usage is
+flagged `estimated` rather than presented as measured.
+
+## Streaming
+
+`POST /api/chat/stream` returns server-sent events: stage updates, then answer
+tokens, then the same result dict `/api/chat` returns.
+
+The implementation is deliberately narrow. Making every agent a generator and
+threading that through four backends would be a large change to the most stable
+part of the system for a presentation concern. Instead a sink is published in a
+`ContextVar`; `LLMWrapper` notices it, asks the provider to stream, forwards each
+delta, and still returns the finished string to its caller. **Agents,
+orchestrators and the session model are untouched.** Only free-text generation
+streams — classification is JSON mode, and streaming a half-built routing decision
+as if it were an answer would be worse than not streaming at all.
+
+Measurement then changed what the feature is for. Streaming the answer buys
+**~0.1–0.5s** of perceived latency, because generation is only about a quarter of
+a warm turn. The stage events during the other three quarters are worth more, so
+the UI shows *Classifying intent → Searching the knowledge base → Writing the
+answer* and the tokens are the last, smallest part of it.
+
+---
+
 ## Evaluation
 
 Two evaluations, answering different questions.
@@ -770,7 +846,7 @@ Two evaluations, answering different questions.
 
 `evals/golden_set.json` holds expected answers written by hand, so a pass means
 the system matched a fixed expectation rather than an expectation written to fit
-the system. Three suites:
+the system. Four suites:
 
 **1. Routing (deterministic, no judge).** The expected agent is a string; the run
 matches it or it does not. Includes deliberately adjacent pairs — *"What is the
@@ -782,18 +858,33 @@ intent classifier actually fails.
 the retrieved chunks and that expected facts appear in the answer. Also reports
 recall@1 for each arm alone against the fused result.
 
-**3. Refusal (LLM as judge).** *Did it decline to invent a policy?* cannot be a
+**3. Groundedness (LLM as judge, per claim).** Breaks the answer into individual
+claims and checks each against the extracts it cites. This catches the one failure
+the other suites cannot see: routing correct, retrieval correct, citations real,
+and a figure in the answer that appears nowhere in the retrieved text. Claim by
+claim rather than a single verdict, because a whole-answer score collapses to a
+vibe — this way the judge has to point at the offending sentence, which is both
+stricter and a usable trace. Greetings and hedges are classified `not_a_claim` and
+excluded from the denominator, so padding an answer cannot raise its score.
+
+**4. Refusal (LLM as judge).** *Did it decline to invent a policy?* cannot be a
 string match, so this suite uses a judge — but a narrow one, asked a single
 yes/no question with a fixed rubric, not "is this answer good".
 
 ```bash
-python eval_system.py                 # all three suites
-python eval_system.py --suite rag     # routing | rag | refusal | all
+python eval_system.py                  # all four suites
+python eval_system.py --suite grounded # routing | rag | grounded | refusal | all
+python eval_retrieval.py               # the 25-case retrieval benchmark
 docker compose run --rm app eval
 ```
 
-Last run: **16/16** — routing 8/8, retrieval 6/6, refusal 2/2, stable across
-repeated runs.
+Last run: **22/22** — routing 8/8, retrieval 6/6, groundedness 6/6, refusal 2/2,
+stable across repeated runs.
+
+The groundedness judge is itself checked against hand-labelled answers by
+`test_metrics.py --live`: a faithful answer, an inflated figure, two invented
+rules and a fabricated allowance. It catches all four and names the offending
+claim.
 
 The suite is run at temperature 0. At the app's default 0.7 the answer-text
 assertions flickered between runs, and a gate that fails for no reason teaches
@@ -807,31 +898,53 @@ reimbursement policy" vs "claim my expenses"). That is a semantic rule, not a
 patch for one test string, and the adjacent pairs in the golden set exist to keep
 it honest.
 
-### What the retrieval numbers actually show
+### `eval_retrieval.py` — the retrieval benchmark, and a refuted hypothesis
 
-The per-arm comparison is reported because it is the honest test of the hybrid
-claim, and on this corpus it does not support it:
+`evals/retrieval_benchmark.json` holds **25 hand-labelled question→section pairs**
+over the 8-document corpus in `evals/corpus/` (74 chunks). Each case records what
+it stresses: `lexical` (a rare literal token like *LWP* or *PIP*), `semantic` (no
+content words shared with the target clause), `confusable` (a decoy section
+nearby — three policies define an "eligibility" clause), or `direct`.
+
+```bash
+python eval_retrieval.py
+```
+
+It scores every arm separately, into its own Milvus collection:
 
 ```
-recall@1 over 5 pinned cases:  dense-only 5/5 | sparse-only 5/5 | hybrid 5/5
+arm           recall@1  recall@3  recall@5     MRR
+dense            0.960     1.000     1.000   0.980
+sparse           0.680     0.880     0.880   0.767
+hybrid_rrf       0.800     0.920     0.920   0.860
+hybrid_w85       0.880     0.920     0.920   0.900
 ```
 
-**On a 29-chunk policy document, fusion buys nothing measurable.** Either arm
-alone already ranks the right chunk first. Part of the reason is a choice made
-earlier: chunks are prefixed with their heading trail before embedding, which
-puts literal strings like `LWP` into the dense vector and removes exactly the
-weakness BM25 was there to cover.
+**Fusion loses. My earlier hypothesis was wrong.** On the 29-chunk policy file
+both arms tied, and I predicted fusion would start winning on a larger corpus. At
+74 chunks it is decisively *behind* dense alone — and equal-weight RRF is the
+worst fusion of the four tested, which is what you would expect when one arm is
+much stronger: the weak arm gets an equal vote and drags correct top-1 results
+down. Weighting dense at 0.85 recovers most of the gap but still does not close it.
 
-Hybrid retrieval is kept anyway, for reasons that are about where this goes
-rather than where it is: BM25 degrades far more gracefully as a corpus grows and
-as queries contain identifiers the embedding model never saw, and the fusion
-plumbing is the part that is annoying to retrofit later. But this is currently
-an architectural bet, not a measured win, and the eval prints the number that
-says so on every run.
+Two things explain it, and both are consequences of earlier decisions:
 
-The other honest gap: **6 retrieval cases is not a benchmark.** There is no
-labelled recall@k set over a realistic corpus, so "retrieval works" here means
-"works on the cases I thought to write down".
+- **Heading-prefixing made BM25 redundant.** Chunks carry their heading trail into
+  the embedded text, so literal tokens like `LWP` are already in the dense vector.
+  The per-probe table shows it: on `lexical` cases dense and sparse both score 3/4.
+  The weakness BM25 was there to cover had already been designed out.
+- **Sparse is much weaker on `semantic` cases** (4/8 against dense's 8/8), and RRF
+  has no way to know that.
+
+So `knowledge.fusion` is now a setting — `rrf`, `weighted` or `dense` — rather than
+an assumption. The default is left on `rrf` so the shipped demo exercises the full
+hybrid path, and the benchmark prints the number that argues against it. If this
+were serving real traffic I would run `dense` and keep the sparse arm for a corpus
+that outgrows the embedding model's vocabulary.
+
+**What the benchmark still does not prove:** 74 chunks is small, one corpus is not
+a distribution, and the labels are mine. It is a real measurement, not a settled
+question.
 
 ### `eval_routing.py` — LLM as judge over real traffic
 
@@ -926,10 +1039,12 @@ interface whose shape is an opinion — see
 | Leave safeguards, DB validation, atomicity | Automated, offline (`test_validation.py`) |
 | Routing quality | Scored by an LLM judge (`eval_routing.py`); the judge itself is checked against labelled data by `test_eval.py --live` |
 | RAG grounding and degradation | Automated, offline (`test_rag.py`) — citations, refusal on empty retrieval, fallback when Milvus is down |
-| Hybrid retrieval against real Milvus | `test_rag.py --live` checks exact-term and paraphrase recall; **no labelled recall@k benchmark** |
+| Answer groundedness | Per-claim judge (`eval_system.py --suite grounded`), itself checked against hand-labelled fabrications by `test_metrics.py --live` |
+| Retrieval quality | **Measured**: 25 labelled cases, recall@1/3/5 and MRR per arm (`eval_retrieval.py`) |
+| Cost and latency | Measured per turn, aggregated as p50/p95 — but on a laptop against one provider, not under load |
 | `crewai` backend | Run manually against live Groq; no automated coverage |
 | `adk` backend | Run manually against live Gemini; no automated coverage |
-| Agent answer quality | **Not evaluated.** The judge scores *which agent* handled a turn, not whether the answer was correct or well-grounded |
+| Agent answer quality | **Partly.** Groundedness is scored per claim against the cited extracts, so a fabricated figure fails. Whether a *grounded* answer is also the most useful one is not scored |
 
 ### Known limitations
 
@@ -941,11 +1056,14 @@ interface whose shape is an opinion — see
   approve them; there is no HR-side view. The balance is deducted at submission
   rather than on approval, which is the wrong policy for a real system but keeps
   the demo's numbers legible.
-- **Retrieval quality is unmeasured.** Hybrid search demonstrably finds the right
-  clause on the queries tried, but there is no labelled retrieval set and so no
-  recall@k or MRR figure. The routing evaluation does not cover it.
-- **No reranker.** RRF fuses two rankings; a cross-encoder over the fused
-  candidates would do better, at the cost of another model call per query.
+- **The retrieval benchmark is one corpus.** 25 cases over 74 chunks is a real
+  measurement, not a distribution. The labels are mine, and a different corpus
+  could reverse the dense-vs-fusion result.
+- **No reranker.** A cross-encoder over the fused candidates would likely beat all
+  four arms — but the benchmark now exists to prove that rather than assume it,
+  which is the order those two things should happen in.
+- **No load testing.** Latency is measured on a laptop, one request at a time.
+  There is no concurrency, throughput or saturation number anywhere.
 - **Chunking is heading-driven and tuned to this document.** A policy file with
   no headings falls back to paragraph packing, which is workable but blunter.
 - **Uploads are unauthenticated.** Anyone who can reach the app can add or delete
@@ -973,21 +1091,22 @@ interface whose shape is an opinion — see
 
 ### What I would harden next, in order
 
-1. **Extend evaluation from routing to answers and retrieval.** `eval_routing.py`
-   scores which agent handled a turn; nothing scores whether the answer was right
-   or whether the right chunk was retrieved. The next step is a labelled
-   question→chunk set for recall@k, plus a groundedness check that fails an answer
-   making claims absent from its cited extracts.
-2. **Put the upload endpoint behind an HR role.** Right now anyone who can reach
-   the app can change what the assistant treats as company policy.
-3. **Add a reranker** over the fused candidates.
-2. **Automated coverage for `crewai` and `adk`**, using the same fake-LLM
+1. **Authentication, and the upload endpoint behind an HR role.** Anyone who can
+   reach the app can act as any employee and change what the assistant treats as
+   company policy. This is the largest gap between this and something deployable.
+2. **A reranker over the fused candidates.** Deliberately second, not first: the
+   benchmark now exists to prove a reranker helps rather than assume it, which is
+   the order those two things should happen in. Adding it before the measurement
+   would have repeated the mistake the benchmark just caught.
+3. **Automated coverage for `crewai` and `adk`**, using the same fake-LLM
    technique that covers native and LangGraph. Both are currently verified by
    hand, which is how the ADK tool functions ran for a while against a hardcoded
    `user_id=1` — reporting one employee's leave balance to another — without
    anything catching it.
-3. **Move approval into the model**: deduct on approval rather than submission,
+4. **Load and concurrency testing.** Latency is measured one request at a time on
+   a laptop. There is no throughput number, no saturation point, and no locking
+   around the read-validate-write sequence that leave submission depends on.
+5. **Move approval into the model**: deduct on approval rather than submission,
    add a status transition path, and give HR a view.
-4. **Real retrieval** for the policy document — chunk, embed, and retrieve, with
-   citations back to the source section.
-5. **Authentication**, so `user_id` comes from a session rather than a config file.
+6. **Log rotation and redaction**, before anything resembling real HR traffic
+   touches it — see [logs/README.md](logs/README.md).

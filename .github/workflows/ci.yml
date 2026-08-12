@@ -57,6 +57,9 @@ jobs:
       - name: Routing-evaluation scoring
         run: python test_eval.py
 
+      - name: Cost/latency accounting, streaming and groundedness
+        run: python test_metrics.py
+
   docker:
     name: Docker image builds and passes its own suites
     runs-on: ubuntu-latest

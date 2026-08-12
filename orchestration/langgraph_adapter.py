@@ -28,6 +28,7 @@ from typing import Any, Dict, List, TypedDict
 from langgraph.graph import StateGraph, END
 
 from agents import AGENT_REGISTRY
+from core import metrics
 from core.intent_detector import IntentDetector
 from core.llm_wrapper import LLMWrapper
 from core.logger import InteractionLogger
@@ -158,7 +159,8 @@ class LangGraphOrchestrator(BaseOrchestrator):
             ctx.last_agent = agent_name
 
             try:
-                reply = self.invoke_agent(agent_name, state["user_input"], ctx)
+                with metrics.stage("generation", progress=False):
+                    reply = self.invoke_agent(agent_name, state["user_input"], ctx)
             except Exception as e:
                 # Contain the failure at the node. An exception escaping here
                 # would abort the whole graph and surface as a 500 with no

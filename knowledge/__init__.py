@@ -36,6 +36,8 @@ DEFAULTS: Dict[str, Any] = {
     "candidate_k": 20,
     "rrf_k": 60,
     "connect_timeout": 5,
+    "fusion": "rrf",              # rrf | weighted | dense
+    "dense_weight": 0.85,         # used when fusion == "weighted"
 }
 
 
@@ -115,4 +117,6 @@ def build_store(config: Optional[Dict[str, Any]] = None) -> MilvusKnowledgeStore
         token=cfg["milvus_token"],
         rrf_k=cfg["rrf_k"],
         connect_timeout=float(cfg["connect_timeout"]),
+        fusion=str(cfg["fusion"]),
+        dense_weight=float(cfg["dense_weight"]),
     )

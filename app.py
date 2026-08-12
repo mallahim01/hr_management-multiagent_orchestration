@@ -23,12 +23,16 @@ Endpoints:
   GET  /api/report                – generate and return HTML report path
 """
 
+import json
 import os
 import uuid
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 from dotenv import load_dotenv
 import yaml
+
+from core import metrics
+from core import streaming as streams
 
 load_dotenv()
 
@@ -105,11 +109,16 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
         "user_id": config["active_user_id"],
     }
 
+    pricing = config.get("pricing") or None
+
     def _run_turn(session_id: str, user_input: str) -> dict:
         """Shared pipeline: detect intent, invoke agent, persist, log."""
         user_id = active["user_id"]
         ctx = session_manager.get_or_create(session_id, user_id)
-        result = active["orchestrator"].process(user_input, ctx)
+
+        with metrics.turn(pricing=pricing) as turn_metrics:
+            result = active["orchestrator"].process(user_input, ctx)
+        result["metrics"] = turn_metrics.summary()
 
         db.save_message(session_id, user_id, "user", user_input)
         db.save_message(
@@ -131,6 +140,7 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
             target_agent=result["agent_class"],
             agent_response=result["reply"],
             backend=result["backend"],
+            metrics=result["metrics"],
         )
         result["user_id"] = user_id
         return result
@@ -152,6 +162,56 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
 
         result = _run_turn(session_id, user_input)
         return jsonify(result)
+
+    @app.route("/api/chat/stream", methods=["POST"])
+    def chat_stream():
+        """
+        Server-sent events for one turn: stage updates, then tokens, then the
+        same result dict `/api/chat` returns.
+
+        The turn runs on a worker thread while this generator drains the sink
+        from the request thread. `copy_context()` carries the ContextVars across
+        — without it the worker would not see the sink, and streaming would
+        silently fall back to a blocking call that still worked, which is a
+        worse failure than an error.
+        """
+        import threading
+        from contextvars import copy_context
+
+        data = request.get_json(force=True, silent=True) or {}
+        user_input = (data.get("message") or "").strip()
+        session_id = data.get("session_id") or str(uuid.uuid4())
+        if not user_input:
+            return jsonify({"error": "Empty message"}), 400
+
+        token_sink = streams.TokenSink()
+
+        def worker():
+            try:
+                with streams.sink(token_sink):
+                    token_sink.emit_event("stage", stage="routing")
+                    result = _run_turn(session_id, user_input)
+                    token_sink.emit_event("result", **result)
+            except Exception as e:
+                print(f"  [stream] turn failed: {type(e).__name__}: {e}")
+                token_sink.emit_event(
+                    "error", error=f"{type(e).__name__}: {e}")
+            finally:
+                token_sink.close()
+
+        threading.Thread(target=copy_context().run, args=(worker,),
+                         daemon=True).start()
+
+        def events():
+            for item in token_sink.drain():
+                yield f"data: {json.dumps(item)}\n\n"
+            yield "data: {\"type\": \"done\"}\n\n"
+
+        return Response(events(), mimetype="text/event-stream", headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",     # stop nginx buffering the stream
+            "Connection": "keep-alive",
+        })
 
     @app.route("/api/status")
     def status():
@@ -282,6 +342,77 @@ def create_app(config, db, llm, orchestrator, session_manager, logger):
             from knowledge import build_store
             active["store"] = build_store(config)
         return active["store"]
+
+    @app.route("/api/metrics/summary")
+    def metrics_summary():
+        """
+        Aggregate cost and latency over recent turns, read back from the log.
+
+        Percentiles rather than a mean: LLM latency has a long tail, and a mean
+        that a cold start or one retry can move is not a number worth quoting.
+        """
+        try:
+            limit = max(1, min(int(request.args.get("limit", 50)), 500))
+        except (TypeError, ValueError):
+            limit = 50
+
+        try:
+            with open(logger.log_path, encoding="utf-8") as f:
+                records = [json.loads(line) for line in f if line.strip()]
+        except (FileNotFoundError, json.JSONDecodeError):
+            records = []
+
+        turns = [r for r in records
+                 if r.get("event", "interaction") == "interaction" and r.get("metrics")]
+        turns = turns[-limit:]
+        if not turns:
+            return jsonify({"turns": 0, "note": "no measured turns in the log yet"})
+
+        def pct(values, p):
+            if not values:
+                return None
+            ordered = sorted(values)
+            idx = min(int(round((p / 100) * (len(ordered) - 1))), len(ordered) - 1)
+            return round(ordered[idx], 3)
+
+        seconds = [t["metrics"]["seconds"] for t in turns]
+        costs = [t["metrics"]["cost_usd"] for t in turns]
+        tokens = [t["metrics"]["total_tokens"] for t in turns]
+
+        stage_totals: dict = {}
+        for t in turns:
+            for name, v in (t["metrics"].get("stages") or {}).items():
+                entry = stage_totals.setdefault(
+                    name, {"cost_usd": 0.0, "seconds": 0.0, "calls": 0})
+                entry["cost_usd"] += v.get("cost_usd", 0.0)
+                entry["seconds"] += v.get("seconds", v.get("llm_seconds", 0.0))
+                entry["calls"] += v.get("calls", 0)
+
+        total_cost = sum(costs) or 1e-12
+        total_stage_seconds = sum(s["seconds"] for s in stage_totals.values()) or 1e-12
+        for name, v in stage_totals.items():
+            v["cost_usd"] = round(v["cost_usd"], 8)
+            v["seconds"] = round(v["seconds"], 3)
+            v["cost_share"] = round(v["cost_usd"] / total_cost, 3)
+            v["latency_share"] = round(v["seconds"] / total_stage_seconds, 3)
+
+        by_backend: dict = {}
+        for t in turns:
+            b = by_backend.setdefault(t.get("backend", "?"), [])
+            b.append(t["metrics"]["seconds"])
+
+        return jsonify({
+            "turns": len(turns),
+            "latency_p50": pct(seconds, 50),
+            "latency_p95": pct(seconds, 95),
+            "cost_median": pct(costs, 50),
+            "cost_total": round(sum(costs), 6),
+            "tokens_median": pct(tokens, 50),
+            "estimated_any": any(t["metrics"].get("estimated_tokens") for t in turns),
+            "stages": stage_totals,
+            "by_backend": {k: {"turns": len(v), "p50": pct(v, 50)}
+                           for k, v in by_backend.items()},
+        })
 
     @app.route("/api/knowledge/status")
     def knowledge_status():

@@ -22,6 +22,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from agents.base_agent import BaseAgent
+from core import metrics
 from core.session import SessionContext
 
 RAG_SYSTEM_PROMPT = """You are the ACME Corporation HR Knowledge Assistant.
@@ -108,9 +109,13 @@ class CompanyKnowledgeAgent(BaseAgent):
         if self._rag_enabled():
             try:
                 cfg = self._retrieval_config()
-                results = self.store.hybrid_search(
-                    user_input, top_k=cfg["top_k"], candidate_k=cfg["candidate_k"]
-                )
+                # Retrieval is its own stage: it spends an embedding call plus a
+                # Milvus round trip, and the two show up very differently in the
+                # cost and latency split.
+                with metrics.stage("retrieval"):
+                    results = self.store.hybrid_search(
+                        user_input, top_k=cfg["top_k"], candidate_k=cfg["candidate_k"]
+                    )
                 self.last_mode = "rag"
             except Exception as e:
                 # Retrieval is the whole point of this agent, so a failure is
@@ -146,7 +151,8 @@ class CompanyKnowledgeAgent(BaseAgent):
             RAG_SYSTEM_PROMPT.format(context=self._format_context(results)),
             user_input, ctx,
         )
-        reply = self.llm.chat(messages)
+        with metrics.stage("generation"):
+            reply = self.llm.chat(messages)
         return f"{reply}\n\n{self._format_sources(results)}"
 
     # ── Context / citation formatting ────────────────────────────────────────

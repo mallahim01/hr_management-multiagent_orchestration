@@ -42,9 +42,17 @@ class InteractionLogger:
         target_agent: Optional[str],
         agent_response: str,
         backend: str,
+        metrics: Optional[dict] = None,
     ) -> None:
-        """Append a single interaction record to the log file."""
-        self._write({
+        """
+        Append a single interaction record to the log file.
+
+        `metrics` carries the cost and latency breakdown from core/metrics.py
+        when the caller measured the turn. It lives on the same record as the
+        turn rather than in a separate stream, so "what did this answer cost"
+        is answerable by reading one line.
+        """
+        record = {
             "event": "interaction",
             "session_id": session_id,
             "user_id": user_id,
@@ -54,7 +62,10 @@ class InteractionLogger:
             "target_agent": target_agent,
             "agent_response": agent_response[:200],  # truncate long responses
             "backend": backend,
-        })
+        }
+        if metrics:
+            record["metrics"] = metrics
+        self._write(record)
 
     def log_event(self, event: str, **fields: Any) -> None:
         """

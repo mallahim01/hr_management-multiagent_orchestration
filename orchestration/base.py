@@ -8,6 +8,7 @@ so the business logic (agents, session) never knows which backend is active.
 from abc import ABC, abstractmethod
 from typing import Dict
 
+from core import metrics
 from core.session import SessionContext
 
 
@@ -92,7 +93,11 @@ class BaseOrchestrator(ABC):
         ctx.last_intent = intent_result["intent"]
         ctx.last_agent = target_agent
 
-        reply = self.invoke_agent(target_agent, user_input, ctx)
+        # Everything the agent does counts as generation unless it opens a more
+        # specific stage of its own — CompanyKnowledgeAgent nests "retrieval"
+        # around its Milvus round trip, and the inner stage wins.
+        with metrics.stage("generation", progress=False):
+            reply = self.invoke_agent(target_agent, user_input, ctx)
 
         return {
             "reply":       reply,

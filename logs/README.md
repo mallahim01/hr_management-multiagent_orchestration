@@ -24,7 +24,7 @@ Every record has `timestamp` and `event`.
 
 | `event` | Written by | Carries |
 |---|---|---|
-| `interaction` | `main.py`, `app.py` | one conversation turn: `user_input`, `intent`, `confidence`, `target_agent`, `agent_response` (truncated), `backend`, `session_id` |
+| `interaction` | `main.py`, `app.py` | one conversation turn: `user_input`, `intent`, `confidence`, `target_agent`, `agent_response` (truncated), `backend`, `session_id`, and `metrics` (below) |
 | `leave_request_rejected` | `agents/leave_request_agent.py` | `reason_code`, `detail`, the dates, and for balance failures `requested_days` / `remaining_leaves`; for clashes `conflicting_request_id` |
 | `hr_request_rejected` | `agents/hr_request_agent.py` | `reason_code`, `detail` |
 | `agent_node_failed` | `orchestration/langgraph_adapter.py` | `node`, the exception type and message — an agent that raised and was contained |
@@ -35,6 +35,32 @@ Every record has `timestamp` and `event`.
 | `knowledge_no_results` | `agents/company_knowledge_agent.py` | the query that retrieved nothing, so the agent declined instead of answering ungrounded |
 | `routing_eval` | `eval_routing.py`, `/api/eval` | `judged`, `correct`, `incorrect`, `accuracy`, and the misroutes |
 | `system_eval` | `eval_system.py` | per-suite pass counts against the golden set |
+| `retrieval_benchmark` | `eval_retrieval.py` | corpus size and recall@1 per retrieval arm |
+| `active_user_changed` | `app.py` | `previous_user_id`, `user_id`, `name` |
+
+## The `metrics` block
+
+Every measured turn carries cost and latency on the same line as the turn itself,
+so "what did this answer cost, and where did the time go" is answerable by reading
+one record:
+
+```json
+"metrics": {
+  "seconds": 1.06, "cost_usd": 0.00073, "total_tokens": 1227, "llm_calls": 3,
+  "estimated_tokens": false,
+  "stages": {
+    "classification": {"calls": 1, "cost_usd": 0.000347, "llm_seconds": 0.316, "seconds": 0.316},
+    "retrieval":      {"calls": 1, "cost_usd": 0.000001, "llm_seconds": 0.373, "seconds": 0.380},
+    "generation":     {"calls": 1, "cost_usd": 0.000390, "llm_seconds": 0.239, "seconds": 0.868}
+  }
+}
+```
+
+`llm_seconds` is time the provider was working; `seconds` is wall clock for the
+stage, so retrieval's Milvus round trip shows up in the gap between them.
+`estimated_tokens` is true when the provider reported no usage and the count was
+derived from character length — a guessed number is never presented as a measured
+one. A model absent from the `pricing` table in `config.yaml` is costed at zero.
 
 `reason_code` values for rejections: `insufficient_balance`, `overlapping_request`,
 `malformed_dates`, `no_balance_record`, `storage_rejected`.

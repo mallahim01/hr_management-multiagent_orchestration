@@ -18,6 +18,8 @@ import os
 import time
 from typing import List, Optional, Sequence
 
+from core import metrics
+
 DEFAULT_MODEL = "gemini-embedding-001"
 DEFAULT_DIMENSION = 768
 KEY_ENV = ["GOOGLE_API_KEY", "GOOGLE_API_KEY_2", "GOOGLE_API_KEY_3"]
@@ -111,6 +113,7 @@ class GeminiEmbedder:
         last_error: Optional[Exception] = None
         attempt = 0
         while attempt < self.max_retries:
+            started = time.perf_counter()
             try:
                 response = self._get_client().models.embed_content(
                     model=self.model,
@@ -120,6 +123,7 @@ class GeminiEmbedder:
                         task_type=task_type,
                     ),
                 )
+                self._record(response, batch, time.perf_counter() - started)
                 return [_normalise(list(e.values)) for e in response.embeddings]
             except EmbeddingUnavailable:
                 raise
@@ -139,6 +143,21 @@ class GeminiEmbedder:
         raise EmbeddingUnavailable(
             f"Embedding failed after {self.max_retries} attempts: {last_error}"
         )
+
+    def _record(self, response, batch: List[str], seconds: float) -> None:
+        """
+        Attribute the embedding call to the active turn.
+
+        The embeddings API reports token usage inconsistently across versions,
+        so fall back to a character estimate and flag it rather than reporting
+        a guess as a measurement. Embeddings have no output tokens.
+        """
+        usage = getattr(response, "usage_metadata", None)
+        tokens = getattr(usage, "total_token_count", None) if usage else None
+        estimated = tokens is None
+        if estimated:
+            tokens = sum(len(t) for t in batch) // 4
+        metrics.record_call(self.model, int(tokens), 0, seconds, estimated=estimated)
 
 
 def _normalise(vector: List[float]) -> List[float]:

@@ -230,7 +230,54 @@ def single_arm_search(store, query, arm, top_k, candidate_k):
     return [{"rank": i + 1, **h.get("entity", {})} for i, h in enumerate(raw)]
 
 
-# ── Suite 3: refusal (LLM as judge) ──────────────────────────────────────────
+# ── Suite 3: groundedness (LLM as judge, per claim) ──────────────────────────
+
+def run_groundedness(golden, llm, store) -> Suite:
+    """
+    Does the answer only assert what its extracts support?
+
+    This is the one failure the other suites cannot see: routing correct,
+    retrieval correct, citations real — and a number in the answer that appears
+    nowhere in the retrieved text.
+    """
+    from core.groundedness import GroundednessJudge
+
+    suite = Suite("GROUNDEDNESS – every claim traced to an extract (LLM judge)")
+    judge = GroundednessJudge(llm)
+
+    db = DatabaseManager(os.path.join("data", "eval_tmp3.db"))
+    initialize_database(db, CONFIG["active_user_id"])
+    from agents.company_knowledge_agent import CompanyKnowledgeAgent
+    agent = CompanyKnowledgeAgent(llm, db, InteractionLogger(), store=store,
+                                  config=CONFIG)
+
+    for case in golden["retrieval"]:
+        answer = agent.handle(case["query"],
+                              SessionContext(session_id=str(uuid.uuid4()),
+                                             user_id=CONFIG["active_user_id"]))
+        report = judge.evaluate(case["query"], answer, agent.last_sources)
+
+        if report["error"]:
+            suite.add(case["id"], False, f"judge error: {report['error']}", skipped=True)
+            continue
+
+        bad = report["unsupported"] + report["contradicted"]
+        detail = (f"{case['query'][:44]:<46} "
+                  f"{report['supported']}/{report['factual_claims']} supported")
+        if bad:
+            offender = next((c for c in report["claims"]
+                             if c["verdict"] in ("unsupported", "contradicted")), {})
+            detail += f"  ⚠ {offender.get('verdict')}: {offender.get('claim','')[:60]}"
+        suite.add(case["id"], report["grounded"], detail)
+
+    for suffix in ("", "-wal", "-shm"):
+        path = os.path.join("data", "eval_tmp3.db") + suffix
+        if os.path.exists(path):
+            os.remove(path)
+    return suite
+
+
+# ── Suite 4: refusal (LLM as judge) ──────────────────────────────────────────
 
 def run_refusal(golden, llm, store) -> Suite:
     suite = Suite("REFUSAL – declines questions the policy does not answer (LLM judge)")
@@ -272,7 +319,7 @@ def run_refusal(golden, llm, store) -> Suite:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate against the golden set")
     parser.add_argument("--suite", default="all",
-                        choices=["all", "routing", "rag", "refusal"])
+                        choices=["all", "routing", "rag", "grounded", "refusal"])
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -298,19 +345,21 @@ def main() -> None:
     if args.suite in ("all", "routing"):
         suites.append(run_routing(golden, llm))
 
-    needs_store = args.suite in ("all", "rag", "refusal")
+    needs_store = args.suite in ("all", "rag", "grounded", "refusal")
     store = None
     if needs_store:
         store = build_store(CONFIG)
         if not store.embedder.configured or not store.ensure_ready():
             print(f"\n⚠️  Knowledge base unavailable ({store.last_error or 'no GOOGLE_API_KEY'})."
                   f"\n   Start Milvus and run: python ingest_knowledge.py")
-            if args.suite in ("rag", "refusal"):
+            if args.suite in ("rag", "grounded", "refusal"):
                 sys.exit(1)
             needs_store = False
 
     if needs_store and args.suite in ("all", "rag"):
         suites.append(run_retrieval(golden, llm, store, cfg))
+    if needs_store and args.suite in ("all", "grounded"):
+        suites.append(run_groundedness(golden, llm, store))
     if needs_store and args.suite in ("all", "refusal"):
         suites.append(run_refusal(golden, llm, store))
 

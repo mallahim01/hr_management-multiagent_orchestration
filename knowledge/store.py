@@ -52,12 +52,21 @@ class MilvusKnowledgeStore:
         token: str = "",
         rrf_k: int = 60,
         connect_timeout: float = 5.0,
+        fusion: str = "rrf",
+        dense_weight: float = 0.85,
     ) -> None:
         self.uri = uri
         self.collection = collection
         self.dimension = dimension
         self.token = token
         self.rrf_k = rrf_k
+        # How the two arms are combined: "rrf" (rank fusion, both arms equal),
+        # "weighted" (dense_weight vs the remainder), or "dense" (skip BM25).
+        # eval_retrieval.py measures all three — on the benchmark corpus dense
+        # alone currently scores highest, so this is deliberately a setting
+        # rather than a hardcoded assumption.
+        self.fusion = fusion
+        self.dense_weight = dense_weight
         # Without an explicit timeout the client blocks for a long time when
         # Milvus is down, which turns a degraded knowledge base into a hung UI.
         # Failing fast lets the agent fall back and the Knowledge tab say why.
@@ -232,28 +241,39 @@ class MilvusKnowledgeStore:
                 f"Milvus unavailable at {self.uri} ({self._last_error})"
             )
 
-        from pymilvus import AnnSearchRequest, RRFRanker
+        from pymilvus import AnnSearchRequest, RRFRanker, WeightedRanker
 
         query_vector = self.embedder.embed_query(query)
         client = self._connect()
 
-        requests = [
-            AnnSearchRequest(
-                data=[query_vector], anns_field="dense_vector",
-                param={"ef": max(64, candidate_k * 2)},
-                limit=candidate_k, expr=filter_expr or None,
-            ),
-            AnnSearchRequest(
-                data=[query], anns_field="sparse_vector",
-                param={"drop_ratio_search": 0.0},
-                limit=candidate_k, expr=filter_expr or None,
-            ),
-        ]
-
-        hits = client.hybrid_search(
-            self.collection, reqs=requests, ranker=RRFRanker(self.rrf_k),
-            limit=top_k, output_fields=OUTPUT_FIELDS,
-        )[0]
+        if self.fusion == "dense":
+            # Skip BM25 entirely — one arm, one query.
+            raw = client.search(
+                self.collection, data=[query_vector], anns_field="dense_vector",
+                search_params={"ef": max(64, candidate_k * 2)}, limit=top_k,
+                filter=filter_expr or "", output_fields=OUTPUT_FIELDS,
+            )[0]
+            hits = raw
+        else:
+            requests = [
+                AnnSearchRequest(
+                    data=[query_vector], anns_field="dense_vector",
+                    param={"ef": max(64, candidate_k * 2)},
+                    limit=candidate_k, expr=filter_expr or None,
+                ),
+                AnnSearchRequest(
+                    data=[query], anns_field="sparse_vector",
+                    param={"drop_ratio_search": 0.0},
+                    limit=candidate_k, expr=filter_expr or None,
+                ),
+            ]
+            ranker = (WeightedRanker(self.dense_weight,
+                                     round(1.0 - self.dense_weight, 3))
+                      if self.fusion == "weighted" else RRFRanker(self.rrf_k))
+            hits = client.hybrid_search(
+                self.collection, reqs=requests, ranker=ranker,
+                limit=top_k, output_fields=OUTPUT_FIELDS,
+            )[0]
 
         results = []
         for rank, hit in enumerate(hits, start=1):

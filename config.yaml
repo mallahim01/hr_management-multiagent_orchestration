@@ -24,6 +24,16 @@ database:
 conversation:
   history_size: 3
 
+# Cost accounting — USD per 1,000,000 tokens.
+# A snapshot for order-of-magnitude reporting, not billing; update when rates
+# move. A model missing from this table is costed at zero rather than guessed,
+# so an absent number is never mistaken for a measured one.
+pricing:
+  llama-3.3-70b-versatile:  {input: 0.59, output: 0.79}
+  llama-3.1-8b-instant:     {input: 0.05, output: 0.08}
+  gemini-embedding-001:     {input: 0.15, output: 0.00}
+  gpt-4o-mini:              {input: 0.15, output: 0.60}
+
 # Knowledge base — hybrid RAG over Milvus, used by CompanyKnowledgeAgent.
 # Embeddings come from Google (GOOGLE_API_KEY); chat generation stays on the
 # llm provider above. Set enabled: false to answer from data/company_policy.txt
@@ -40,6 +50,13 @@ knowledge:
   top_k: 5                            # extracts passed to the LLM
   candidate_k: 20                     # per-arm candidates fetched before fusion
   rrf_k: 60                           # Reciprocal Rank Fusion smoothing constant
+  # How the dense and BM25 arms are combined: rrf | weighted | dense.
+  # `python eval_retrieval.py` measures all three against 25 labelled cases.
+  # On that corpus dense alone currently scores highest (0.96 recall@1 vs 0.88
+  # for the best fusion) — see the README. Left on rrf so the default exercises
+  # the full hybrid path; switch to `dense` if you care only about this corpus.
+  fusion: rrf
+  dense_weight: 0.85                  # applies when fusion is `weighted`
   connect_timeout: 5                  # seconds; fail fast so a down Milvus
                                       # degrades visibly instead of hanging
 

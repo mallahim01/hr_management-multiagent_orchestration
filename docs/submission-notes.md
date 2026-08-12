@@ -60,29 +60,49 @@ every claim below names a file you can open.
 | [`test_rag.py`](../test_rag.py) | 9 offline checks on chunking, grounding, citations, refusal and degradation, plus a `--live` pass against real Milvus and Gemini. |
 | [`test_api.py`](../test_api.py) | 11 checks on the Flask surface — the two routes holding mutable server state (user and backend switching), plus the error paths the UI depends on. |
 | [`test_eval.py`](../test_eval.py) | 10 checks on the routing-eval scoring itself, plus a `--live` probe of the judge against labelled data. |
-| [`eval_system.py`](../eval_system.py) + [`evals/golden_set.json`](../evals/golden_set.json) | Golden-set evaluation: deterministic routing and retrieval scoring, LLM judge for refusal. |
+| [`eval_system.py`](../eval_system.py) + [`evals/golden_set.json`](../evals/golden_set.json) | Golden-set evaluation, 16 hand-labelled cases across four suites: routing and retrieval scored deterministically, groundedness and refusal by a narrow LLM judge. |
 | [`eval_routing.py`](../eval_routing.py) + [`core/routing_judge.py`](../core/routing_judge.py) | LLM-as-judge scoring of routing on real logged traffic. |
+| [`test_metrics.py`](../test_metrics.py) | 14 checks on cost accounting, the streaming sink and the groundedness judge, plus a `--live` probe that shows the judge four fabrications and checks it catches them. |
+| [`eval_retrieval.py`](../eval_retrieval.py) + [`evals/retrieval_benchmark.json`](../evals/retrieval_benchmark.json) | 25 labelled question→section pairs over `evals/corpus/`; recall@1/3/5 and MRR for dense, sparse and three fusion configurations. |
 | [`verify.py`](../verify.py) | Import and DB-seeding smoke check. |
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Runs every suite on two Python versions, builds the Docker image and runs the suites inside it, and fails the build on a committed secret, a machine-specific path, or a tracked `.env`. No secrets configured — the offline suites need none. |
+
+**93 offline checks** across seven suites, none needing an API key, network or
+Milvus. Both LLM judges are themselves scored against hand-labelled data
+(`test_eval.py --live`, `test_metrics.py --live`), so a judge that rubber-stamps
+everything fails its own test.
+
+### Cost, latency and streaming
+
+| Path | What it does |
+|---|---|
+| [`core/metrics.py`](../core/metrics.py) | Per-turn token, cost and latency accounting, split by stage. Held in a `ContextVar` so no call signature changes; a missing rate costs zero rather than being guessed, and an estimated token count is flagged. |
+| [`core/streaming.py`](../core/streaming.py) | The token sink, also in a `ContextVar`. `LLMWrapper` streams into it when one is active and still returns the finished string, so agents and orchestrators are untouched. Only free-text generation streams. |
+| [`core/groundedness.py`](../core/groundedness.py) | Per-claim judge: breaks an answer apart and checks each claim against the extracts it cites. |
 
 ### Logging
 
 | Path | What it does |
 |---|---|
-| [`core/logger.py`](../core/logger.py) | JSONL writer. `log()` for conversation turns, `log_event()` for structured domain events; both go to one file so a refusal and the turn that caused it sit adjacent. |
+| [`core/logger.py`](../core/logger.py) | JSONL writer. `log()` for conversation turns — carrying the cost/latency block — and `log_event()` for structured domain events; both go to one file so a refusal and the turn that caused it sit adjacent. |
 | [`logs/README.md`](../logs/README.md) | Record reference for all 11 event types. |
 | [`logs/sample-session.log`](../logs/sample-session.log) | A real recorded session, committed so behaviour is inspectable without running anything. |
 | [`read_log.py`](../read_log.py) | Renders the log as a table. |
 
 ### What does not exist
 
-- **No tracing.** No OpenTelemetry, no LangSmith, no span timing. The log records
-  what happened, not how long anything took.
+- **No distributed tracing.** No OpenTelemetry, no LangSmith, no span tree. Every
+  turn does carry its own cost and per-stage latency (`core/metrics.py`), but
+  there is nothing that correlates a request across processes.
 - **No auth.** No login, no roles. `active_user_id` is an integer in
   `config.yaml`, and the document-upload endpoint is unauthenticated.
 - **No deployment.** CI builds the image and runs the suites, but nothing is
   deployed anywhere; there is no staging environment and no live traffic.
-- **No retrieval benchmark.** See "known limitations" in the README.
+- **No load or concurrency testing.** Latency is measured one request at a time on
+  a laptop; there is no throughput figure, no saturation point, and no locking
+  around the read-validate-write sequence leave submission depends on.
+- **The retrieval benchmark is one corpus.** 25 labelled cases over 74 chunks is a
+  real measurement, not a distribution, and the labels are mine.
 
 ---
 

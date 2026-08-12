@@ -76,6 +76,7 @@ case "${1:-web}" in
     python test_validation.py
     python test_api.py
     python test_eval.py
+    python test_metrics.py
     exec python test_rag.py
     ;;
   eval)

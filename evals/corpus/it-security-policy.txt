@@ -1,0 +1,38 @@
+ACME Corporation - IT and Information Security Policy
+Effective Date: January 1, 2026
+Version: 5.0
+
+SECTION 1 - ACCOUNTS AND ACCESS
+
+1.1 Passwords
+   - Passwords must be at least 14 characters and are rotated every 180 days.
+   - Multi-factor authentication is mandatory on all company accounts.
+
+1.2 Access Reviews
+   - Access rights are reviewed quarterly by the system owner.
+
+SECTION 2 - DEVICES
+
+2.1 Company Devices
+   - Company laptops are refreshed every 3 years.
+   - Full disk encryption is mandatory and centrally enforced.
+
+2.2 Personal Devices
+   - Personal devices may access email and chat only, through the managed app.
+   - Storing company documents on personal devices is prohibited.
+
+SECTION 3 - DATA HANDLING
+
+3.1 Classification
+   - Data is classified as Public, Internal, Confidential or Restricted.
+   - Employee personal data is always Restricted.
+
+3.2 Incident Reporting
+   - Suspected security incidents must be reported within 1 hour of discovery.
+   - Reports go to security@acmecorp.com and the line manager simultaneously.
+
+SECTION 4 - ACCEPTABLE USE
+
+4.1 AI Tools
+   - Approved AI assistants may be used for drafting and code review.
+   - Confidential or Restricted data must never be pasted into external AI tools.

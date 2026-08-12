@@ -6,6 +6,8 @@ Returns a structured dict with intent, confidence, and target_agent.
 """
 
 from typing import Dict, List
+
+from core import metrics
 from core.llm_wrapper import LLMWrapper
 
 # Maps intent labels to the agent class name that will handle them
@@ -95,7 +97,8 @@ class IntentDetector:
             messages.append({"role": "user", "content": f"Message to classify: {user_message}"})
 
         try:
-            result = self.llm.chat_json(messages)
+            with metrics.stage("classification"):
+                result = self.llm.chat_json(messages)
             # Validate and normalise
             intent = result.get("intent", "general")
             if intent not in INTENT_TO_AGENT:

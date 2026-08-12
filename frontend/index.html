@@ -134,6 +134,35 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
 }
 .path-arrow { color: var(--muted); font-size: .7rem; }
 
+/* Per-turn cost and latency */
+.turn-metrics {
+  display: flex; gap: .5rem; flex-wrap: wrap; align-items: center;
+  margin-top: .4rem; font-size: .65rem; color: var(--muted);
+}
+.metric-pill {
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  padding: .1rem .45rem; font-family: 'Cascadia Mono', Consolas, monospace;
+}
+.metric-pill b { color: var(--text); font-weight: 600; }
+.metric-pill.est { border-style: dashed; }
+.stage-bar { display: flex; height: 5px; border-radius: 3px; overflow: hidden; width: 150px; }
+.stage-bar span { display: block; height: 100%; }
+.sb-classification { background: var(--yellow); }
+.sb-retrieval      { background: var(--blue); }
+.sb-generation     { background: var(--accent); }
+.sb-other          { background: var(--gray); }
+
+/* Live progress while a turn is streaming */
+.stage-live { display: flex; align-items: center; gap: .4rem; font-size: .7rem; color: var(--muted); }
+.stage-live .dotspin {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.1s infinite;
+}
+.stream-caret {
+  display: inline-block; width: 7px; height: 1em; vertical-align: text-bottom;
+  background: var(--accent2); animation: pulse 1s infinite; margin-left: 1px;
+}
+
 .eval-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .5rem; margin-bottom: 1rem; }
 .eval-stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .6rem; text-align: center; }
 .eval-stat .v { font-size: 1.4rem; font-weight: 700; }
@@ -573,7 +602,7 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
       <div class="tab active" onclick="switchTab('chat')">💬 Chat</div>
       <div class="tab" onclick="switchTab('data'); loadData()">📋 Data</div>
       <div class="tab" onclick="switchTab('graph'); loadGraph()">🔗 Graph</div>
-      <div class="tab" onclick="switchTab('evals')">🎯 Evals</div>
+      <div class="tab" onclick="switchTab('evals'); loadMetrics()">🎯 Evals</div>
       <div class="tab" onclick="switchTab('knowledge'); loadKnowledge()">📚 Knowledge</div>
     </div>
 
@@ -671,6 +700,19 @@ table.dt tr:hover td { background: rgba(255,255,255,.02); }
     <!-- Evals Panel -->
     <div class="tab-panel" id="panel-evals">
       <div class="panel-scroll">
+
+        <div class="data-card">
+          <div class="data-card-header">
+            <span class="data-card-title">⏱️ Cost &amp; latency</span>
+            <button class="data-refresh" onclick="loadMetrics()">↻ Refresh</button>
+          </div>
+          <p class="backend-note" style="margin:0 0 .5rem">
+            Measured per turn and read back from the interaction log. Percentiles rather
+            than means — LLM latency has a long tail, and one cold start moves a mean.
+          </p>
+          <div id="metrics-body"><div class="empty-state">Loading…</div></div>
+        </div>
+
         <div class="data-card">
           <div class="data-card-header">
             <span class="data-card-title">🎯 Routing Evaluation — LLM as judge</span>
@@ -934,20 +976,13 @@ async function sendMessage() {
 
   clearEmptyState();
   appendUserMessage(text);
-  showTyping(true);
 
   try {
-    const result = await apiFetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, session_id: sessionId }),
-    });
+    const result = await streamTurn(text);
 
     sessionId = result.session_id;
     localStorage.setItem('hrSessionId', sessionId);
     document.getElementById('session-badge').textContent = `session: ${sessionId.slice(0, 8)}…`;
-
-    showTyping(false);
 
     // Detect handoff
     if (lastAgent && lastAgent !== result.agent_class) {
@@ -961,8 +996,7 @@ async function sendMessage() {
     loadBalance();
 
   } catch (e) {
-    showTyping(false);
-    appendError('Connection error. Is the Flask server running? (`python main.py --web`)');
+    appendError(`Could not complete that turn: ${e.message}`);
   }
 }
 
@@ -1012,9 +1046,114 @@ function appendAgentMessage(result) {
         <span style="font-size:.65rem;color:var(--muted)">${escHtml(result.intent || '')}</span>
       </div>
       ${graphPathChips(result)}
+      ${turnMetrics(result)}
     </div>`;
   msgs.appendChild(div);
   scrollBottom();
+}
+
+// Cost and latency for the turn, split by stage. Shown per reply because the
+// split is the interesting part: classification is a third of the latency.
+function turnMetrics(result) {
+  const m = result.metrics;
+  if (!m || !m.seconds) return '';
+  const stages = m.stages || {};
+  const order = ['classification', 'retrieval', 'generation', 'other'];
+  const wall = order
+    .map(s => [s, (stages[s] || {}).seconds ?? (stages[s] || {}).llm_seconds ?? 0])
+    .filter(([, v]) => v > 0);
+  const total = wall.reduce((a, [, v]) => a + v, 0) || 1;
+
+  const bar = wall.length
+    ? `<span class="stage-bar" title="${wall.map(([s, v]) => `${s} ${v.toFixed(2)}s`).join(' · ')}">
+         ${wall.map(([s, v]) => `<span class="sb-${s}" style="width:${(v / total) * 100}%"></span>`).join('')}
+       </span>` : '';
+
+  const cost = m.cost_usd >= 0.00001 ? `$${m.cost_usd.toFixed(5)}` : `$${m.cost_usd.toExponential(1)}`;
+  return `
+    <div class="turn-metrics">
+      ${bar}
+      <span class="metric-pill"><b>${m.seconds.toFixed(2)}</b>s</span>
+      <span class="metric-pill${m.estimated_tokens ? ' est' : ''}" title="${
+        m.estimated_tokens ? 'Some token counts were estimated' : 'Reported by the provider'}"><b>${cost}</b></span>
+      <span class="metric-pill"><b>${m.total_tokens}</b> tok</span>
+      <span class="metric-pill"><b>${m.llm_calls}</b> ${m.llm_calls === 1 ? 'call' : 'calls'}</span>
+    </div>`;
+}
+
+// ── Streaming a turn ─────────────────────────────────────────────────────
+const STAGE_LABEL = {
+  routing: 'Routing…',
+  classification: 'Classifying intent…',
+  retrieval: 'Searching the knowledge base…',
+  generation: 'Writing the answer…',
+};
+
+/**
+ * Send one turn over SSE. Renders stage progress, then tokens as they arrive,
+ * and resolves with the same result dict /api/chat returns.
+ *
+ * Measurement showed generation is only ~25% of a warm turn, so the stage
+ * updates during the other 75% matter more to perceived speed than the tokens.
+ */
+async function streamTurn(text) {
+  const msgs = document.getElementById('messages');
+  const holder = document.createElement('div');
+  holder.className = 'msg assistant';
+  holder.innerHTML = `
+    <div class="avatar agent-av">🤖</div>
+    <div class="bubble-wrap">
+      <div class="bubble"><span class="stage-live"><span class="dotspin"></span><span class="stage-text">Thinking…</span></span></div>
+    </div>`;
+  msgs.appendChild(holder);
+  scrollBottom();
+
+  const bubble = holder.querySelector('.bubble');
+  const res = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: text, session_id: sessionId }),
+  });
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', streamed = '', result = null, streamError = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let cut;
+    while ((cut = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, cut).trim();
+      buffer = buffer.slice(cut + 2);
+      if (!frame.startsWith('data:')) continue;
+
+      const ev = JSON.parse(frame.slice(5).trim());
+      if (ev.type === 'stage') {
+        const label = holder.querySelector('.stage-text');
+        if (label) label.textContent = STAGE_LABEL[ev.stage] || `${ev.stage}…`;
+      } else if (ev.type === 'token') {
+        streamed += ev.text;
+        bubble.innerHTML = formatMarkdown(streamed) + '<span class="stream-caret"></span>';
+        scrollBottom();
+      } else if (ev.type === 'result') {
+        result = ev;
+      } else if (ev.type === 'error') {
+        streamError = ev.error;
+      }
+    }
+  }
+
+  if (streamError) { holder.remove(); throw new Error(streamError); }
+  if (!result)     { holder.remove(); throw new Error('stream ended without a result'); }
+
+  // Replace the streamed draft with the finished reply plus its badges: the
+  // agent appends the sources block after generation, so it never streams.
+  holder.remove();
+  return result;
 }
 
 // LangGraph reports the ordered nodes a turn traversed; show it when present.
@@ -1137,6 +1276,59 @@ async function loadGraph() {
     el.innerHTML = `<div class="graph-ascii">${escHtml(d.ascii)}</div>${path}`;
   } catch (e) {
     el.innerHTML = '<div class="empty-state">Error loading graph.</div>';
+  }
+}
+
+// ── Cost & latency ───────────────────────────────────────────────
+async function loadMetrics() {
+  const el = document.getElementById('metrics-body');
+  try {
+    const d = await apiFetch('/api/metrics/summary?limit=100');
+    if (!d.turns) {
+      el.innerHTML = `<div class="empty-state">${escHtml(d.note || 'No measured turns yet.')}<br>
+        Send a few messages, then refresh.</div>`;
+      return;
+    }
+    const money = v => v >= 0.00001 ? `$${v.toFixed(5)}` : `$${v.toExponential(1)}`;
+    const summary = `
+      <div class="eval-summary">
+        <div class="eval-stat acc"><div class="v">${d.latency_p50}s</div><div class="l">p50 latency</div></div>
+        <div class="eval-stat amb"><div class="v">${d.latency_p95}s</div><div class="l">p95 latency</div></div>
+        <div class="eval-stat ok"><div class="v">${money(d.cost_median)}</div><div class="l">median cost</div></div>
+        <div class="eval-stat"><div class="v">${d.tokens_median}</div><div class="l">median tokens</div></div>
+        <div class="eval-stat"><div class="v">${d.turns}</div><div class="l">turns measured</div></div>
+      </div>`;
+
+    const order = ['classification', 'retrieval', 'generation', 'other'];
+    const rows = order.filter(s => d.stages[s]).map(s => {
+      const v = d.stages[s];
+      return `<tr>
+        <td><span class="path-chip">${escHtml(s)}</span></td>
+        <td>${money(v.cost_usd)}</td>
+        <td><b>${Math.round(v.cost_share * 100)}%</b></td>
+        <td>${v.seconds.toFixed(2)}s</td>
+        <td><b>${Math.round(v.latency_share * 100)}%</b></td>
+        <td>${v.calls}</td>
+      </tr>`;
+    }).join('');
+
+    const backends = Object.entries(d.by_backend)
+      .map(([k, v]) => `<span class="metric-pill">${escHtml(k)} <b>${v.p50}s</b> (${v.turns})</span>`)
+      .join(' ');
+
+    el.innerHTML = summary + `
+      <div class="data-table-wrap"><table class="dt">
+        <thead><tr><th>Stage</th><th>Cost</th><th>Cost share</th>
+                   <th>Latency</th><th>Latency share</th><th>Calls</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="turn-metrics" style="margin-top:.75rem">p50 by backend: ${backends}</div>
+      <p class="backend-note">
+        Total spend across these turns: <b>${money(d.cost_total)}</b>.
+        ${d.estimated_any ? 'Some token counts were estimated where the provider reported none.' : 'All token counts reported by the provider.'}
+      </p>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Could not load metrics.</div>';
   }
 }
 

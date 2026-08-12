@@ -19,6 +19,9 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI, APIError, RateLimitError, APIConnectionError
 
+from core import metrics
+from core import streaming as streams
+
 
 # ── Provider registry ────────────────────────────────────────────────────────
 # base_url=None means "use the SDK default" (i.e. api.openai.com).
@@ -135,11 +138,18 @@ class LLMWrapper:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
+        streaming = streams.should_stream(metrics.current_stage(), json_mode)
+
         last_error: Exception = RuntimeError("Unknown LLM error")
         attempt = 0
         while attempt < self.max_retries:
+            started = time.perf_counter()
             try:
+                if streaming:
+                    return self._chat_streaming(kwargs, started)
                 response = self.client.chat.completions.create(**kwargs)
+                self._record_usage(response, time.perf_counter() - started,
+                                   messages, response.choices[0].message.content)
                 return response.choices[0].message.content or ""
             except RateLimitError as e:
                 last_error = e
@@ -161,6 +171,60 @@ class LLMWrapper:
                 raise RuntimeError(f"{self.provider} API error: {e}") from e
 
         raise RuntimeError(f"LLM call failed after {self.max_retries} retries: {last_error}")
+
+    # ── Streaming ────────────────────────────────────────────────────────────
+
+    def _chat_streaming(self, kwargs: Dict[str, Any], started: float) -> str:
+        """
+        Stream deltas to the active sink while returning the complete string.
+
+        The caller — an agent — receives exactly what it would have received
+        from a non-streamed call, so nothing downstream needs to know.
+        """
+        chunks: List[str] = []
+        usage = None
+        stream = self.client.chat.completions.create(
+            **kwargs, stream=True, stream_options={"include_usage": True})
+        for event in stream:
+            usage = getattr(event, "usage", None) or usage
+            if not event.choices:
+                continue                      # the final usage-only frame
+            delta = event.choices[0].delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                chunks.append(piece)
+                streams.emit(piece)
+
+        reply = "".join(chunks)
+        self._record_usage(usage, time.perf_counter() - started,
+                           kwargs["messages"], reply, usage_is_object=False)
+        return reply
+
+    # ── Accounting ───────────────────────────────────────────────────────────
+
+    def _record_usage(self, response: Any, seconds: float,
+                      messages: List[Dict[str, str]], reply: Optional[str],
+                      usage_is_object: bool = True) -> None:
+        """
+        Attribute this call's tokens and latency to the active turn.
+
+        Falls back to a character-based estimate when the provider reports no
+        usage, and flags it, so a number that was guessed is never presented as
+        one that was measured.
+        """
+        usage = getattr(response, "usage", None) if usage_is_object else response
+        prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+        completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+
+        estimated = prompt_tokens is None or completion_tokens is None
+        if estimated:
+            prompt_chars = sum(len(m.get("content") or "") for m in messages)
+            prompt_tokens = prompt_tokens if prompt_tokens is not None else prompt_chars // 4
+            completion_tokens = completion_tokens if completion_tokens is not None \
+                else len(reply or "") // 4
+
+        metrics.record_call(self.model, prompt_tokens, completion_tokens,
+                            seconds, estimated=estimated)
 
     def chat_json(self, messages: List[Dict[str, str]]) -> Dict:
         """

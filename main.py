@@ -27,6 +27,7 @@ with open("config.yaml", encoding="utf-8") as f:
 
 from database.db import DatabaseManager
 from database.schema import initialize_database
+from core import metrics
 from core.llm_wrapper import LLMWrapper, available_keys
 
 _provider = config["llm"].get("provider", "groq")
@@ -79,7 +80,10 @@ DEMO_PROMPTS = [
 def run_turn(session_id: str, user_input: str) -> dict:
     """Process one conversation turn and return the result dict."""
     ctx = session_manager.get_or_create(session_id, user_id)
-    result = orchestrator.process(user_input, ctx)
+
+    with metrics.turn(pricing=config.get("pricing")) as turn_metrics:
+        result = orchestrator.process(user_input, ctx)
+    result["metrics"] = turn_metrics.summary()
 
     # Persist messages and session
     db.save_message(session_id, user_id, "user", user_input)
@@ -101,6 +105,7 @@ def run_turn(session_id: str, user_input: str) -> dict:
         target_agent=result["agent_class"],
         agent_response=result["reply"],
         backend=result["backend"],
+        metrics=result["metrics"],
     )
 
     return result
